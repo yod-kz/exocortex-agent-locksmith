@@ -188,3 +188,119 @@ async fn legacy_agent_skill_route_is_removed() {
         .await;
     resp.assert_status(axum::http::StatusCode::NOT_FOUND);
 }
+
+// WEM-334 regression — personalized /skill must list tools sourced
+// from the registrations table (catalog), not the legacy config.tools
+// block. Pre-fix, every Phase-E+ deployment (the documented v2 default)
+// rendered "_No tools currently available to you._" because
+// render_authenticated walked the always-empty config.tools intersection.
+//
+// The fixture below mirrors phase_e_discovery_test::setup_with_seed:
+// wires a populated RegistrationRepository through
+// build_app_full_with_registrations and leaves config.tools empty,
+// matching the production catalog deployment shape.
+#[tokio::test]
+async fn skill_personalized_lists_catalog_tools_not_config_tools() {
+    use agent_locksmith::app::build_app_full_with_registrations;
+    use agent_locksmith::registrations::{AuthSpec, Kind, Registration, RegistrationRepository};
+
+    let dir = TempDir::new().unwrap();
+    let pool = open_and_migrate(&dir.path().join("locksmith.db"))
+        .await
+        .unwrap();
+    let agents = AgentRepository::new(pool.clone());
+    let audit = AuditRepository::new(pool.clone());
+    let registrations = Arc::new(RegistrationRepository::new(pool));
+
+    // Catalog: two tools. Agent's allowlist will permit one and exclude
+    // the other so the test also verifies catalog_listing's ACL filter
+    // flows through render_authenticated unchanged.
+    for r in [
+        Registration::new(
+            "wikipedia".into(),
+            Kind::Tool,
+            "Wikipedia REST API v1 (authless)".into(),
+            "https://en.wikipedia.org".into(),
+            AuthSpec::None,
+        ),
+        Registration::new(
+            "secret-tool".into(),
+            Kind::Tool,
+            "Tool the test agent shouldn't see".into(),
+            "https://example.invalid".into(),
+            AuthSpec::None,
+        ),
+    ] {
+        registrations.create(&r).await.unwrap();
+    }
+
+    // Agent allowlists wikipedia; deliberately omits secret-tool.
+    let allow = vec!["wikipedia".to_string()];
+    let (pid, secret) = agents
+        .create("catalog-test-agent", None, Some(&allow), None, None, None)
+        .await
+        .unwrap();
+
+    let bearer: Arc<dyn AgentAuthenticator> =
+        Arc::new(BearerAuthenticator::with_audit(agents.clone(), Some(audit.clone())).unwrap());
+
+    // YAML deliberately leaves `tools:` empty — the production catalog
+    // shape. Pre-fix this would have produced an empty effective list
+    // and the "_No tools_" explainer.
+    let cfg = parse_config_str(
+        r#"
+listen:
+  host: "127.0.0.1"
+  port: 9200
+"#,
+    )
+    .unwrap();
+    let resolved = resolve_tool_creds_sync_env_only(&cfg);
+    let shared = Arc::new(ArcSwap::from_pointee(cfg));
+    let app = build_app_full_with_registrations(
+        shared,
+        Some(audit),
+        Arc::new(ArcSwap::from_pointee(resolved)),
+        None,
+        Some(bearer),
+        Some(registrations),
+    );
+    let server = TestServer::new(app);
+    let bearer_header = format!("Bearer lk_{pid}.{}", secret.expose_secret());
+
+    let resp = server
+        .get("/skill")
+        .add_header("Authorization", bearer_header)
+        .await;
+    resp.assert_status_ok();
+
+    let body = resp.text();
+    // Catalog tool the agent IS allowlisted for must appear with its
+    // description.
+    assert!(
+        body.contains("`wikipedia`"),
+        "personalized /skill must render the catalog tool the agent is allowed to call; \
+         got body without `wikipedia`"
+    );
+    assert!(
+        body.contains("Wikipedia REST API v1"),
+        "personalized /skill must render the catalog tool's description"
+    );
+    // Catalog tool NOT in the agent's allowlist must be filtered out
+    // (catalog_listing applies AgentIdentity::allows_tool before
+    // returning).
+    assert!(
+        !body.contains("secret-tool"),
+        "personalized /skill must filter catalog by ACL; got body containing secret-tool"
+    );
+    // The empty-list explainer must NOT fire — the regression we're
+    // guarding against. Pre-WEM-334-fix this assertion would have
+    // failed because the renderer's tool list came from the always-
+    // empty config.tools intersection.
+    assert!(
+        !body.contains("No tools currently available to you"),
+        "personalized /skill must source tools from the catalog (regressions to \
+         config.tools-only sourcing reproduce the WEM-334 bug); got body containing \
+         the empty-list explainer despite a populated catalog"
+    );
+}

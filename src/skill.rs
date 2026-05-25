@@ -29,8 +29,6 @@
 //!   before the handler runs).
 
 use crate::auth_v2::AgentIdentity;
-use crate::config::AppConfig;
-use crate::secret::ResolvedCreds;
 
 /// The compile-time generic skill markdown. Returned as-is for
 /// unauthenticated probes; appended to the personalized section for
@@ -44,16 +42,21 @@ pub fn render_unauthenticated() -> String {
 
 /// Render the personalized form: the embedded template followed by a
 /// "## Personalized for `<agent_name>`" section listing the agent's
-/// resolved tool list (allowlist ∩ active tools, minus denylist) with
-/// each tool's name + description, and an audit-debug recipe.
+/// resolved tool list (catalog ∩ allowlist, minus denylist) with each
+/// tool's name + description, and an audit-debug recipe.
 ///
-/// `config` and `resolved_creds` come from the live `AppState`; the
-/// resolved tool list uses the same filtering as `/tools` (active tools
-/// only) so the agent never sees a tool it would 403 on.
+/// `available_tools` is the pre-resolved list of `(name, description)`
+/// pairs the agent may call right now — typically built by the caller
+/// from the same source `/tools` uses (`catalog_listing` over the
+/// registrations table, with the agent's `AgentIdentity` filter
+/// applied). Keeping the catalog lookup at the caller decouples this
+/// renderer from the registrations-vs-legacy-config sourcing decision
+/// (Phase E shifted the source of truth from `config.tools` to the
+/// registrations table; pre-Phase-E v0.2 callers still using
+/// `config.active_tools_against` can pass that result instead).
 pub fn render_authenticated(
     identity: &AgentIdentity,
-    config: &AppConfig,
-    resolved_creds: &ResolvedCreds,
+    available_tools: &[(String, String)],
 ) -> String {
     let allowlist_str = identity
         .tool_allowlist
@@ -66,18 +69,8 @@ pub fn render_authenticated(
         .map(|v| format!("`[{}]`", v.join(", ")))
         .unwrap_or_else(|| "`(none)`".to_string());
 
-    // Compute the effective tool catalog: each currently-active tool
-    // that the agent's ACL permits. Mirrors `proxy::check_tool_acl`
-    // semantics so this output exactly matches what the agent can
-    // actually call.
-    let effective: Vec<&crate::config::ToolConfig> = config
-        .active_tools_against(resolved_creds)
-        .into_iter()
-        .filter(|t| identity.allows_tool(&t.name).is_ok())
-        .collect();
-
     let mut tools_md = String::new();
-    if effective.is_empty() {
+    if available_tools.is_empty() {
         tools_md.push_str(
             "_No tools currently available to you._ Either your ACL excludes \
              every active tool, or no tools are active in this deployment. \
@@ -85,11 +78,11 @@ pub fn render_authenticated(
         );
     } else {
         tools_md.push_str("| Tool | Description |\n|---|---|\n");
-        for tool in &effective {
+        for (name, desc) in available_tools {
             // Trim newlines from descriptions so the markdown table
             // stays well-formed even if operators wrote multi-line YAML.
-            let desc = tool.description.replace('\n', " ");
-            tools_md.push_str(&format!("| `{}` | {} |\n", tool.name, desc));
+            let one_line_desc = desc.replace('\n', " ");
+            tools_md.push_str(&format!("| `{}` | {} |\n", name, one_line_desc));
         }
     }
 
@@ -98,7 +91,7 @@ pub fn render_authenticated(
     // most likely to trip an agent up. Generic skill template covers them
     // too; this section just makes them inescapable in the personalized
     // form (the form an agent sees on first authenticated /skill fetch).
-    let codex_in_acl = effective.iter().any(|t| t.name == "codex");
+    let codex_in_acl = available_tools.iter().any(|(n, _)| n == "codex");
     let codex_quirks_md = if codex_in_acl {
         r#"
 ### Codex quirks (because `codex` is in your ACL)
@@ -185,9 +178,9 @@ specific failure mode (`missing_credential`, `malformed_token`,
         codex_quirks_md = codex_quirks_md,
         allowlist = allowlist_str,
         denylist = denylist_str,
-        first_tool_or_placeholder = effective
+        first_tool_or_placeholder = available_tools
             .first()
-            .map(|t| t.name.as_str())
+            .map(|(n, _)| n.as_str())
             .unwrap_or("<tool>"),
     );
 
@@ -198,7 +191,6 @@ specific failure mode (`missing_credential`, `malformed_token`,
 mod tests {
     use super::*;
     use crate::auth_v2::AgentIdentity;
-    use crate::config::parse_config_str;
 
     fn ident_with(name: &str, allow: Option<&[&str]>, deny: Option<&[&str]>) -> AgentIdentity {
         AgentIdentity {
@@ -208,6 +200,13 @@ mod tests {
             tool_allowlist: allow.map(|s| s.iter().map(|t| t.to_string()).collect()),
             tool_denylist: deny.map(|s| s.iter().map(|t| t.to_string()).collect()),
         }
+    }
+
+    fn tools(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(n, d)| ((*n).to_string(), (*d).to_string()))
+            .collect()
     }
 
     #[test]
@@ -271,23 +270,12 @@ mod tests {
 
     #[test]
     fn authenticated_form_includes_agent_name_and_public_id() {
-        let yaml = r#"
-listen:
-  host: "127.0.0.1"
-  port: 9200
-tools:
-  - name: "things"
-    description: "Things service"
-    upstream: "http://example.invalid"
-    timeouts: { request_seconds: 5, idle_seconds: 5 }
-"#;
-        let cfg = parse_config_str(yaml).unwrap();
-        let resolved = crate::secret::resolve_tool_creds_sync_env_only(&cfg);
         let id = ident_with("agent-alpha", Some(&["things"]), None);
-        let s = render_authenticated(&id, &cfg, &resolved);
+        let available = tools(&[("things", "Things service")]);
+        let s = render_authenticated(&id, &available);
         assert!(s.contains("agent-alpha"));
         assert!(s.contains("TESTPID12345"));
-        // Tool table is rendered for tools the agent is allowed to call.
+        // Tool table is rendered from the caller-provided list.
         assert!(s.contains("`things`"));
         assert!(s.contains("Things service"));
         // The unauth template is preserved verbatim at the top.
@@ -295,52 +283,42 @@ tools:
     }
 
     #[test]
-    fn authenticated_form_filters_by_acl() {
-        let yaml = r#"
-listen:
-  host: "127.0.0.1"
-  port: 9200
-tools:
-  - name: "good"
-    description: "Allowed tool"
-    upstream: "http://example.invalid"
-    timeouts: { request_seconds: 5, idle_seconds: 5 }
-  - name: "bad"
-    description: "Denied tool"
-    upstream: "http://example.invalid"
-    timeouts: { request_seconds: 5, idle_seconds: 5 }
-"#;
-        let cfg = parse_config_str(yaml).unwrap();
-        let resolved = crate::secret::resolve_tool_creds_sync_env_only(&cfg);
+    fn authenticated_form_renders_tools_from_caller_provided_list() {
+        // ACL filtering is the caller's responsibility (matches what
+        // /tools does — `catalog_listing` applies the AgentIdentity
+        // filter before returning). The renderer just emits whatever
+        // it's given.
         let id = ident_with("narrow-agent", Some(&["good"]), None);
-        let s = render_authenticated(&id, &cfg, &resolved);
-        assert!(s.contains("`good`"), "allowlist hit must appear");
+        let available = tools(&[("good", "Allowed tool")]);
+        let s = render_authenticated(&id, &available);
+        assert!(s.contains("`good`"), "tool in available list must appear");
         assert!(
             !s.contains("`bad`"),
-            "tool not in allowlist must NOT appear in the personalized table"
+            "tool not in available list must NOT appear in the personalized table"
         );
     }
 
     #[test]
-    fn authenticated_form_handles_empty_acl_intersection() {
-        let yaml = r#"
-listen:
-  host: "127.0.0.1"
-  port: 9200
-tools:
-  - name: "things"
-    description: "Things service"
-    upstream: "http://example.invalid"
-    timeouts: { request_seconds: 5, idle_seconds: 5 }
-"#;
-        let cfg = parse_config_str(yaml).unwrap();
-        let resolved = crate::secret::resolve_tool_creds_sync_env_only(&cfg);
-        // Allowlist references a tool that doesn't exist → empty
-        // intersection → must render a friendly explainer rather than a
-        // bare empty table.
+    fn authenticated_form_handles_empty_tool_list() {
+        // Empty tool list (operator's allowlist excludes everything,
+        // catalog is empty, etc.) → must render a friendly explainer
+        // rather than a bare empty table.
         let id = ident_with("empty-agent", Some(&["nonexistent"]), None);
-        let s = render_authenticated(&id, &cfg, &resolved);
+        let available: Vec<(String, String)> = Vec::new();
+        let s = render_authenticated(&id, &available);
         assert!(s.contains("No tools currently available to you"));
         assert!(!s.contains("`things`"));
+    }
+
+    #[test]
+    fn authenticated_form_codex_quirks_section_keyed_off_available_list() {
+        // Phase G3 codex section appears when codex is in the agent's
+        // available tools, regardless of whether it's also in allowlist
+        // (the caller already filtered).
+        let id = ident_with("codex-agent", Some(&["codex"]), None);
+        let with_codex = tools(&[("codex", "OpenAI Responses API")]);
+        let without_codex = tools(&[("wikipedia", "Wikipedia REST")]);
+        assert!(render_authenticated(&id, &with_codex).contains("Codex quirks"));
+        assert!(!render_authenticated(&id, &without_codex).contains("Codex quirks"));
     }
 }
