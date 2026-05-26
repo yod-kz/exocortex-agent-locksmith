@@ -25,6 +25,25 @@ logging:
 shutdown:
   drain_window_seconds: 30
 
+# Optional Kamiwaza projection. When enabled, Locksmith discovers running
+# Kamiwaza MCP tools and exposes them as /api/kamiwaza_<extension>_<tool>.
+# The PAT is used only as Locksmith's service credential; it is never returned
+# from /tools. If delegation.signing_secret is set, per-agent requests also
+# carry a short-lived signed identity token for Kamiwaza-side authorization.
+# kamiwaza:
+#   enabled: true
+#   api_url: "https://localhost/api"
+#   api_token: "${KAMIWAZA_PAT}"
+#   verify_tls: true
+#   delegation:
+#     enabled: true
+#     required: false
+#     signing_secret: "${KAMIWAZA_DELEGATION_SIGNING_SECRET}"
+#     header: "x-kamiwaza-agent-delegation"
+#     issuer: "agent-locksmith"
+#     audience: "kamiwaza-tools"
+#     ttl_seconds: 60
+
 # ── Tool APIs ──────────────────────────────────────────────
 # Each tool entry describes one upstream that agents can call as
 # /api/<name>/<path>. R-F2.

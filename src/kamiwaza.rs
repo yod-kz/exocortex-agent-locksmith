@@ -4,15 +4,19 @@ use axum::{
     http::{HeaderMap, HeaderValue, Method, StatusCode},
     response::{IntoResponse, Response},
 };
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use hmac::{Hmac, Mac};
 use reqwest::Client;
+use reqwest::header::{HeaderName as ReqwestHeaderName, HeaderValue as ReqwestHeaderValue};
 use secrecy::ExposeSecret;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::env;
 use std::fmt;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::config::{AppConfig, KamiwazaConfig};
+use crate::auth_v2::AgentIdentity;
+use crate::config::{AppConfig, KamiwazaConfig, KamiwazaDelegationConfig};
 
 const MCP_PROTOCOL_VERSION: &str = "2025-03-26";
 const DEFAULT_API_URL_CANDIDATES: &[&str] = &[
@@ -20,6 +24,8 @@ const DEFAULT_API_URL_CANDIDATES: &[&str] = &[
     "https://host.docker.internal/api",
     "https://traefik/api",
 ];
+const KAMIWAZA_DELEGATION_SECRET_ENV: &str = "KAMIWAZA_DELEGATION_SIGNING_SECRET";
+type HmacSha256 = Hmac<sha2::Sha256>;
 
 #[derive(Debug, Clone)]
 pub struct KamiwazaTool {
@@ -35,6 +41,8 @@ pub struct KamiwazaTool {
 pub enum KamiwazaError {
     Disabled,
     MissingToken,
+    MissingDelegationSigningSecret,
+    MissingAgentIdentity,
     Request(String),
     Protocol(String),
 }
@@ -44,6 +52,14 @@ impl fmt::Display for KamiwazaError {
         match self {
             Self::Disabled => write!(f, "Kamiwaza provider is disabled"),
             Self::MissingToken => write!(f, "Kamiwaza provider has no API token configured"),
+            Self::MissingDelegationSigningSecret => write!(
+                f,
+                "Kamiwaza delegated identity is enabled but no signing secret is configured"
+            ),
+            Self::MissingAgentIdentity => write!(
+                f,
+                "Kamiwaza delegated identity is required but no authenticated agent identity is available"
+            ),
             Self::Request(message) => write!(f, "Kamiwaza request failed: {message}"),
             Self::Protocol(message) => write!(f, "Kamiwaza MCP protocol error: {message}"),
         }
@@ -95,6 +111,97 @@ fn api_token(kamiwaza: &KamiwazaConfig) -> Option<String> {
     env::var("KAMIWAZA_API_KEY")
         .ok()
         .and_then(|value| trim_nonempty(&value))
+}
+
+fn delegation_signing_secret(delegation: &KamiwazaDelegationConfig) -> Option<String> {
+    if let Some(secret) = &delegation.signing_secret
+        && let Some(value) = trim_nonempty(secret.expose_secret())
+    {
+        return Some(value);
+    }
+    env::var(KAMIWAZA_DELEGATION_SECRET_ENV)
+        .ok()
+        .and_then(|value| trim_nonempty(&value))
+}
+
+#[derive(Debug, Clone)]
+struct DelegationHeader {
+    name: ReqwestHeaderName,
+    value: ReqwestHeaderValue,
+}
+
+fn build_delegation_header(
+    kamiwaza: &KamiwazaConfig,
+    identity: Option<&AgentIdentity>,
+    tool: &KamiwazaTool,
+) -> Result<Option<DelegationHeader>, KamiwazaError> {
+    let delegation = &kamiwaza.delegation;
+    let secret = delegation_signing_secret(delegation);
+    let delegation_requested = delegation.enabled || delegation.required || secret.is_some();
+    if !delegation_requested {
+        return Ok(None);
+    }
+    let Some(identity) = identity else {
+        if delegation.required {
+            return Err(KamiwazaError::MissingAgentIdentity);
+        }
+        return Ok(None);
+    };
+    let Some(secret) = secret else {
+        return Err(KamiwazaError::MissingDelegationSigningSecret);
+    };
+    let jwt = build_delegation_jwt(delegation, identity, tool, &secret)?;
+    let header_name = ReqwestHeaderName::from_bytes(delegation.header.as_bytes())
+        .map_err(|error| KamiwazaError::Protocol(format!("invalid delegation header: {error}")))?;
+    let header_value = ReqwestHeaderValue::from_str(&format!("Bearer {jwt}")).map_err(|error| {
+        KamiwazaError::Protocol(format!("invalid delegation header value: {error}"))
+    })?;
+    Ok(Some(DelegationHeader {
+        name: header_name,
+        value: header_value,
+    }))
+}
+
+fn build_delegation_jwt(
+    delegation: &KamiwazaDelegationConfig,
+    identity: &AgentIdentity,
+    tool: &KamiwazaTool,
+    secret: &str,
+) -> Result<String, KamiwazaError> {
+    let issued_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    let expires_at = issued_at.saturating_add(delegation.ttl_seconds);
+    let header = json!({
+        "alg": "HS256",
+        "typ": "JWT",
+    });
+    let claims = json!({
+        "iss": delegation.issuer.as_str(),
+        "aud": delegation.audience.as_str(),
+        "sub": identity.public_id.as_str(),
+        "agent_id": identity.id,
+        "agent_name": identity.name.as_str(),
+        "iat": issued_at,
+        "exp": expires_at,
+        "scope": "kamiwaza.tool.invoke",
+        "tool": tool.slug.as_str(),
+        "extension": tool.extension_name.as_str(),
+        "mcp_tool": tool.tool_name.as_str(),
+    });
+    let signing_input = format!("{}.{}", jwt_segment(&header)?, jwt_segment(&claims)?);
+    let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
+        .map_err(|error| KamiwazaError::Protocol(error.to_string()))?;
+    mac.update(signing_input.as_bytes());
+    let signature = URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes());
+    Ok(format!("{signing_input}.{signature}"))
+}
+
+fn jwt_segment(value: &Value) -> Result<String, KamiwazaError> {
+    serde_json::to_vec(value)
+        .map(|bytes| URL_SAFE_NO_PAD.encode(bytes))
+        .map_err(|error| KamiwazaError::Protocol(error.to_string()))
 }
 
 fn api_url_candidates(kamiwaza: &KamiwazaConfig) -> Vec<String> {
@@ -208,7 +315,7 @@ fn mcp_url_for_extension(extension: &ExtensionResponse) -> Option<String> {
     if endpoint.is_empty() {
         None
     } else {
-        Some(format!("{endpoint}/mcp"))
+        Some(format!("{endpoint}/mcp/"))
     }
 }
 
@@ -246,6 +353,7 @@ async fn send_mcp_json(
     mcp_url: &str,
     token: &str,
     session_id: Option<&str>,
+    delegation: Option<&DelegationHeader>,
     payload: &Value,
 ) -> Result<(Option<String>, Value), KamiwazaError> {
     let mut request = client
@@ -256,6 +364,9 @@ async fn send_mcp_json(
         .json(payload);
     if let Some(session_id) = session_id {
         request = request.header("mcp-session-id", session_id);
+    }
+    if let Some(delegation) = delegation {
+        request = request.header(delegation.name.clone(), delegation.value.clone());
     }
     let response = request
         .send()
@@ -323,14 +434,22 @@ fn parse_mcp_response_body(content_type: &str, text: &str) -> Result<Value, Kami
     }
 }
 
-async fn close_mcp_session(client: &Client, mcp_url: &str, token: &str, session_id: Option<&str>) {
+async fn close_mcp_session(
+    client: &Client,
+    mcp_url: &str,
+    token: &str,
+    session_id: Option<&str>,
+    delegation: Option<&DelegationHeader>,
+) {
     if let Some(session_id) = session_id {
-        let _ = client
+        let mut request = client
             .delete(mcp_url)
             .bearer_auth(token)
-            .header("mcp-session-id", session_id)
-            .send()
-            .await;
+            .header("mcp-session-id", session_id);
+        if let Some(delegation) = delegation {
+            request = request.header(delegation.name.clone(), delegation.value.clone());
+        }
+        let _ = request.send().await;
     }
 }
 
@@ -338,6 +457,7 @@ async fn initialize_session(
     client: &Client,
     mcp_url: &str,
     token: &str,
+    delegation: Option<&DelegationHeader>,
 ) -> Result<Option<String>, KamiwazaError> {
     let initialize = json!({
         "jsonrpc": "2.0",
@@ -352,7 +472,8 @@ async fn initialize_session(
             },
         },
     });
-    let (session_id, payload) = send_mcp_json(client, mcp_url, token, None, &initialize).await?;
+    let (session_id, payload) =
+        send_mcp_json(client, mcp_url, token, None, delegation, &initialize).await?;
     if payload.get("error").is_some() {
         return Err(KamiwazaError::Protocol(
             "initialize returned error".to_string(),
@@ -363,7 +484,15 @@ async fn initialize_session(
         "method": "notifications/initialized",
         "params": {},
     });
-    let _ = send_mcp_json(client, mcp_url, token, session_id.as_deref(), &initialized).await?;
+    let _ = send_mcp_json(
+        client,
+        mcp_url,
+        token,
+        session_id.as_deref(),
+        delegation,
+        &initialized,
+    )
+    .await?;
     Ok(session_id)
 }
 
@@ -372,15 +501,15 @@ async fn list_mcp_tools(
     mcp_url: &str,
     token: &str,
 ) -> Result<Vec<Value>, KamiwazaError> {
-    let session_id = initialize_session(client, mcp_url, token).await?;
+    let session_id = initialize_session(client, mcp_url, token, None).await?;
     let list = json!({
         "jsonrpc": "2.0",
         "id": 2,
         "method": "tools/list",
         "params": {},
     });
-    let result = send_mcp_json(client, mcp_url, token, session_id.as_deref(), &list).await;
-    close_mcp_session(client, mcp_url, token, session_id.as_deref()).await;
+    let result = send_mcp_json(client, mcp_url, token, session_id.as_deref(), None, &list).await;
+    close_mcp_session(client, mcp_url, token, session_id.as_deref(), None).await;
     let payload = result?.1;
     if let Some(error) = payload.get("error") {
         return Err(KamiwazaError::Protocol(format!(
@@ -462,12 +591,15 @@ pub fn is_configured(config: &AppConfig) -> bool {
 pub async fn invoke_tool(
     config: &AppConfig,
     discovered: &KamiwazaTool,
+    identity: Option<&AgentIdentity>,
     arguments: Value,
 ) -> Result<Value, KamiwazaError> {
     let kamiwaza = config.kamiwaza.as_ref().ok_or(KamiwazaError::Disabled)?;
     let token = api_token(kamiwaza).ok_or(KamiwazaError::MissingToken)?;
     let client = build_client(config, kamiwaza)?;
-    let session_id = initialize_session(&client, &discovered.mcp_url, &token).await?;
+    let delegation = build_delegation_header(kamiwaza, identity, discovered)?;
+    let session_id =
+        initialize_session(&client, &discovered.mcp_url, &token, delegation.as_ref()).await?;
     let call = json!({
         "jsonrpc": "2.0",
         "id": 3,
@@ -482,10 +614,18 @@ pub async fn invoke_tool(
         &discovered.mcp_url,
         &token,
         session_id.as_deref(),
+        delegation.as_ref(),
         &call,
     )
     .await;
-    close_mcp_session(&client, &discovered.mcp_url, &token, session_id.as_deref()).await;
+    close_mcp_session(
+        &client,
+        &discovered.mcp_url,
+        &token,
+        session_id.as_deref(),
+        delegation.as_ref(),
+    )
+    .await;
     let payload = result?.1;
     if let Some(error) = payload.get("error") {
         return Err(KamiwazaError::Protocol(format!(
@@ -588,6 +728,7 @@ pub async fn handle_proxy_call(
         }
     };
     let tool = discovered.into_iter().find(|tool| tool.slug == tool_name)?;
+    let identity = req.extensions().get::<AgentIdentity>().cloned();
     let method = req.method().clone();
     let query = req.uri().query().map(|value| value.to_string());
     let body = match axum::body::to_bytes(req.into_body(), 1024 * 1024).await {
@@ -604,7 +745,7 @@ pub async fn handle_proxy_call(
         Ok(arguments) => arguments,
         Err(response) => return Some(*response),
     };
-    match invoke_tool(config, &tool, arguments).await {
+    match invoke_tool(config, &tool, identity.as_ref(), arguments).await {
         Ok(result) => Some(response_json(result)),
         Err(error) => Some(json_error(
             StatusCode::BAD_GATEWAY,

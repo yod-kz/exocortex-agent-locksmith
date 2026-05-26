@@ -431,6 +431,45 @@ pub struct KamiwazaConfig {
     pub cloud: bool,
     #[serde(default = "default_kamiwaza_timeout_seconds")]
     pub timeout_seconds: u64,
+    #[serde(default)]
+    pub delegation: KamiwazaDelegationConfig,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KamiwazaDelegationConfig {
+    /// Attach a signed agent-delegation JWT on Kamiwaza MCP tool calls
+    /// when an authenticated `AgentIdentity` is present.
+    #[serde(default)]
+    pub enabled: bool,
+    /// When true, reject tool invocations that cannot carry a signed
+    /// agent identity. Discovery remains available without identity.
+    #[serde(default)]
+    pub required: bool,
+    #[serde(default)]
+    pub signing_secret: Option<SecretString>,
+    #[serde(default = "default_kamiwaza_delegation_header")]
+    pub header: String,
+    #[serde(default = "default_kamiwaza_delegation_issuer")]
+    pub issuer: String,
+    #[serde(default = "default_kamiwaza_delegation_audience")]
+    pub audience: String,
+    #[serde(default = "default_kamiwaza_delegation_ttl_seconds")]
+    pub ttl_seconds: u64,
+}
+
+impl Default for KamiwazaDelegationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            required: false,
+            signing_secret: None,
+            header: default_kamiwaza_delegation_header(),
+            issuer: default_kamiwaza_delegation_issuer(),
+            audience: default_kamiwaza_delegation_audience(),
+            ttl_seconds: default_kamiwaza_delegation_ttl_seconds(),
+        }
+    }
 }
 
 fn default_kamiwaza_tool_prefix() -> String {
@@ -447,6 +486,22 @@ fn default_true() -> bool {
 
 fn default_kamiwaza_timeout_seconds() -> u64 {
     30
+}
+
+fn default_kamiwaza_delegation_header() -> String {
+    "x-kamiwaza-agent-delegation".to_string()
+}
+
+fn default_kamiwaza_delegation_issuer() -> String {
+    "agent-locksmith".to_string()
+}
+
+fn default_kamiwaza_delegation_audience() -> String {
+    "kamiwaza-tools".to_string()
+}
+
+fn default_kamiwaza_delegation_ttl_seconds() -> u64 {
+    60
 }
 
 impl AppConfig {

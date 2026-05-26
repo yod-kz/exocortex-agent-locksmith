@@ -52,3 +52,51 @@ tools: []
     assert!(config.inbound_auth.is_none());
     assert!(config.logging.is_none());
 }
+
+#[test]
+fn test_kamiwaza_delegation_config_defaults_and_overrides() {
+    let yaml = r#"
+listen:
+  host: "127.0.0.1"
+  port: 9200
+kamiwaza:
+  enabled: true
+  api_url: "https://kamiwaza.local/api"
+  api_token: "pat"
+  delegation:
+    enabled: true
+    required: true
+    signing_secret: "delegation-secret"
+    header: "x-custom-delegation"
+    issuer: "locksmith-test"
+    audience: "kamiwaza-test"
+    ttl_seconds: 120
+tools: []
+"#;
+    let config = parse_config_str(yaml).unwrap();
+    let kamiwaza = config.kamiwaza.as_ref().unwrap();
+    assert!(kamiwaza.delegation.enabled);
+    assert!(kamiwaza.delegation.required);
+    assert_eq!(kamiwaza.delegation.header, "x-custom-delegation");
+    assert_eq!(kamiwaza.delegation.issuer, "locksmith-test");
+    assert_eq!(kamiwaza.delegation.audience, "kamiwaza-test");
+    assert_eq!(kamiwaza.delegation.ttl_seconds, 120);
+
+    let defaults = parse_config_str(
+        r#"
+listen:
+  host: "127.0.0.1"
+  port: 9200
+kamiwaza:
+  enabled: true
+  api_token: "pat"
+tools: []
+"#,
+    )
+    .unwrap();
+    let defaults = defaults.kamiwaza.as_ref().unwrap();
+    assert!(!defaults.delegation.enabled);
+    assert!(!defaults.delegation.required);
+    assert_eq!(defaults.delegation.header, "x-kamiwaza-agent-delegation");
+    assert_eq!(defaults.delegation.ttl_seconds, 60);
+}

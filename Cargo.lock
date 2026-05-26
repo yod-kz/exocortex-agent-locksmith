@@ -54,6 +54,7 @@ dependencies = [
  "criterion",
  "futures-util",
  "getrandom 0.3.4",
+ "hmac",
  "http-body-util",
  "hyper",
  "hyper-util",
