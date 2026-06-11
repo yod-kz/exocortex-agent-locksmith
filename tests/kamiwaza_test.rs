@@ -263,7 +263,7 @@ async fn test_kamiwaza_tools_are_discovered_without_exposing_token() {
     mount_extensions(&mock).await;
     mount_mcp_handshake(
         &mock,
-        "/runtime/tools/tool-z-19607be6/mcp/",
+        "/runtime/tools/tool-z-19607be6/mcp",
         "Search Google using Serper API.",
     )
     .await;
@@ -292,13 +292,13 @@ async fn test_kamiwaza_tool_invocation_calls_mcp_with_injected_bearer() {
     mount_extensions(&mock).await;
     mount_mcp_handshake(
         &mock,
-        "/runtime/tools/tool-z-19607be6/mcp/",
+        "/runtime/tools/tool-z-19607be6/mcp",
         "Search Google using Serper API.",
     )
     .await;
 
     Mock::given(method("DELETE"))
-        .and(path("/runtime/tools/tool-z-19607be6/mcp/"))
+        .and(path("/runtime/tools/tool-z-19607be6/mcp"))
         .and(header("authorization", "Bearer kamiwaza-token"))
         .and(header("mcp-session-id", "test-session"))
         .respond_with(ResponseTemplate::new(200))
@@ -333,7 +333,7 @@ async fn test_kamiwaza_tool_invocation_adds_signed_agent_delegation() {
     mount_extensions(&mock).await;
     mount_mcp_handshake_with_delegation(
         &mock,
-        "/runtime/tools/tool-z-19607be6/mcp/",
+        "/runtime/tools/tool-z-19607be6/mcp",
         "Search Google using Serper API.",
         "agent-public-id",
         "delegation-secret",
@@ -362,7 +362,7 @@ async fn test_kamiwaza_delegation_required_without_agent_identity_fails_closed()
     mount_extensions(&mock).await;
     mount_mcp_handshake(
         &mock,
-        "/runtime/tools/tool-z-19607be6/mcp/",
+        "/runtime/tools/tool-z-19607be6/mcp",
         "Search Google using Serper API.",
     )
     .await;

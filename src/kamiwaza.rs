@@ -315,7 +315,9 @@ fn mcp_url_for_extension(extension: &ExtensionResponse) -> Option<String> {
     if endpoint.is_empty() {
         None
     } else {
-        Some(format!("{endpoint}/mcp/"))
+        // No trailing slash: the Kamiwaza ingress 307-redirects `/mcp/` to a
+        // prefix-stripped plain-http URL, which breaks tool discovery.
+        Some(format!("{endpoint}/mcp"))
     }
 }
 
