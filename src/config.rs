@@ -425,12 +425,27 @@ pub struct KamiwazaConfig {
     pub tool_prefix: String,
     #[serde(default = "default_kamiwaza_include_types")]
     pub include_types: Vec<String>,
+    /// Glob patterns (`*` matches any run of characters) restricting which
+    /// Kamiwaza extension names are discovered. A shared cluster hosts every
+    /// runtime's extensions, so without this each Locksmith discovers (and
+    /// projects) all of them; e.g. `["*-agentzero"]` scopes to one runtime.
+    #[serde(default)]
+    pub extension_names: Vec<String>,
     #[serde(default = "default_true")]
     pub verify_tls: bool,
     #[serde(default)]
     pub cloud: bool,
     #[serde(default = "default_kamiwaza_timeout_seconds")]
     pub timeout_seconds: u64,
+    /// How long a discovered Kamiwaza tool catalog is reused before the next
+    /// `/tools` or proxy call re-discovers. Each discovery is several slow MCP
+    /// round-trips per extension, so re-running it per call is the dominant
+    /// latency; default 600s.
+    #[serde(default = "default_kamiwaza_catalog_ttl_seconds")]
+    pub catalog_ttl_seconds: u64,
+    /// Bounded fan-out for per-extension MCP discovery; default 8.
+    #[serde(default = "default_kamiwaza_discovery_concurrency")]
+    pub discovery_concurrency: usize,
     #[serde(default)]
     pub delegation: KamiwazaDelegationConfig,
 }
@@ -486,6 +501,14 @@ fn default_true() -> bool {
 
 fn default_kamiwaza_timeout_seconds() -> u64 {
     30
+}
+
+fn default_kamiwaza_catalog_ttl_seconds() -> u64 {
+    600
+}
+
+fn default_kamiwaza_discovery_concurrency() -> usize {
+    8
 }
 
 fn default_kamiwaza_delegation_header() -> String {

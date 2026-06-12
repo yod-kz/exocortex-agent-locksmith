@@ -9,11 +9,14 @@ use hmac::{Hmac, Mac};
 use reqwest::Client;
 use reqwest::header::{HeaderName as ReqwestHeaderName, HeaderValue as ReqwestHeaderValue};
 use secrecy::ExposeSecret;
+use futures_util::StreamExt;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::env;
 use std::fmt;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::OnceLock;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tokio::sync::Mutex as AsyncMutex;
 
 use crate::auth_v2::AgentIdentity;
 use crate::config::{AppConfig, KamiwazaConfig, KamiwazaDelegationConfig};
@@ -303,6 +306,50 @@ fn extension_is_allowed(kamiwaza: &KamiwazaConfig, extension: &ExtensionResponse
     {
         return false;
     }
+    if !kamiwaza.extension_names.is_empty()
+        && !kamiwaza
+            .extension_names
+            .iter()
+            .any(|pattern| extension_name_matches(pattern, &extension.name))
+    {
+        return false;
+    }
+    true
+}
+
+/// Case-insensitive glob match where `*` matches any run of characters.
+fn extension_name_matches(pattern: &str, name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    let segments: Vec<&str> = pattern.split('*').collect();
+    if segments.len() == 1 {
+        return name == pattern.to_ascii_lowercase();
+    }
+    let lowered: Vec<String> = segments.iter().map(|s| s.to_ascii_lowercase()).collect();
+    let mut cursor = 0usize;
+    for (index, segment) in lowered.iter().enumerate() {
+        if segment.is_empty() {
+            continue;
+        }
+        if index == 0 {
+            if !name[cursor..].starts_with(segment.as_str()) {
+                return false;
+            }
+            cursor += segment.len();
+            continue;
+        }
+        match name[cursor..].find(segment.as_str()) {
+            Some(found) => cursor += found + segment.len(),
+            None => return false,
+        }
+    }
+    // A pattern without a trailing `*` must consume to the end.
+    if !pattern.ends_with('*') {
+        if let Some(last) = lowered.last() {
+            if !last.is_empty() && !name.ends_with(last.as_str()) {
+                return false;
+            }
+        }
+    }
     true
 }
 
@@ -528,7 +575,48 @@ async fn list_mcp_tools(
     Ok(tools)
 }
 
+struct CachedCatalog {
+    expires_at: Instant,
+    tools: Vec<KamiwazaTool>,
+}
+
+static CATALOG_CACHE: OnceLock<AsyncMutex<Option<CachedCatalog>>> = OnceLock::new();
+
+/// Discovery is several slow MCP round-trips per extension; the `/tools`
+/// listing and every proxy call would otherwise re-run it. Serve a cached
+/// catalog within its TTL and only re-discover (single-flight, behind the
+/// mutex) once it expires.
 pub async fn discover_tools(config: &AppConfig) -> Result<Vec<KamiwazaTool>, KamiwazaError> {
+    let Some(kamiwaza) = config.kamiwaza.as_ref() else {
+        return Ok(Vec::new());
+    };
+    if !kamiwaza.enabled {
+        return Ok(Vec::new());
+    }
+    let ttl = Duration::from_secs(kamiwaza.catalog_ttl_seconds.max(1));
+    let cache = CATALOG_CACHE.get_or_init(|| AsyncMutex::new(None));
+    let mut guard = cache.lock().await;
+    if let Some(entry) = guard.as_ref() {
+        if entry.expires_at > Instant::now() {
+            return Ok(entry.tools.clone());
+        }
+    }
+    let tools = discover_tools_uncached(config).await?;
+    *guard = Some(CachedCatalog {
+        expires_at: Instant::now() + ttl,
+        tools: tools.clone(),
+    });
+    Ok(tools)
+}
+
+/// Drop any cached catalog so the next discovery re-probes immediately.
+pub async fn invalidate_catalog_cache() {
+    if let Some(cache) = CATALOG_CACHE.get() {
+        *cache.lock().await = None;
+    }
+}
+
+async fn discover_tools_uncached(config: &AppConfig) -> Result<Vec<KamiwazaTool>, KamiwazaError> {
     let Some(kamiwaza) = config.kamiwaza.as_ref() else {
         return Ok(Vec::new());
     };
@@ -538,47 +626,65 @@ pub async fn discover_tools(config: &AppConfig) -> Result<Vec<KamiwazaTool>, Kam
     let token = api_token(kamiwaza).ok_or(KamiwazaError::MissingToken)?;
     let client = build_client(config, kamiwaza)?;
     let extensions = fetch_extensions(&client, &api_url_candidates(kamiwaza), &token).await?;
-    let mut discovered = Vec::new();
-    for extension in extensions {
-        if !extension_is_allowed(kamiwaza, &extension) {
-            continue;
-        }
-        let Some(mcp_url) = mcp_url_for_extension(&extension) else {
-            continue;
-        };
-        let tools = match list_mcp_tools(&client, &mcp_url, &token).await {
-            Ok(tools) => tools,
-            Err(error) => {
-                tracing::warn!(
-                    extension = %extension.name,
-                    error = %error,
-                    "failed to discover Kamiwaza MCP tools"
-                );
-                continue;
-            }
-        };
-        for tool in tools {
-            let Some(tool_name) = tool
-                .get("name")
-                .and_then(|value| value.as_str())
-                .and_then(trim_nonempty)
-            else {
-                continue;
+
+    // Each extension costs several slow serial MCP round-trips; a shared
+    // cluster can host dozens, so probe them concurrently with a bounded
+    // fan-out instead of walking them one at a time.
+    let targets: Vec<(ExtensionResponse, String)> = extensions
+        .into_iter()
+        .filter(|extension| extension_is_allowed(kamiwaza, extension))
+        .filter_map(|extension| mcp_url_for_extension(&extension).map(|url| (extension, url)))
+        .collect();
+    let concurrency = kamiwaza.discovery_concurrency.max(1);
+    let prefix = kamiwaza.tool_prefix.clone();
+
+    let mut discovered = futures_util::stream::iter(targets.into_iter().map(|(extension, mcp_url)| {
+        let client = &client;
+        let token = &token;
+        let prefix = &prefix;
+        async move {
+            let tools = match list_mcp_tools(client, &mcp_url, token).await {
+                Ok(tools) => tools,
+                Err(error) => {
+                    tracing::warn!(
+                        extension = %extension.name,
+                        error = %error,
+                        "failed to discover Kamiwaza MCP tools"
+                    );
+                    return Vec::new();
+                }
             };
-            let slug = tool_slug(&kamiwaza.tool_prefix, &extension.name, &tool_name);
-            discovered.push(KamiwazaTool {
-                slug,
-                extension_name: extension.name.clone(),
-                mcp_url: mcp_url.clone(),
-                tool_name,
-                description: tool
-                    .get("description")
+            let mut out = Vec::new();
+            for tool in tools {
+                let Some(tool_name) = tool
+                    .get("name")
                     .and_then(|value| value.as_str())
-                    .and_then(trim_nonempty),
-                input_schema: tool.get("inputSchema").cloned(),
-            });
+                    .and_then(trim_nonempty)
+                else {
+                    continue;
+                };
+                out.push(KamiwazaTool {
+                    slug: tool_slug(prefix, &extension.name, &tool_name),
+                    extension_name: extension.name.clone(),
+                    mcp_url: mcp_url.clone(),
+                    tool_name,
+                    description: tool
+                        .get("description")
+                        .and_then(|value| value.as_str())
+                        .and_then(trim_nonempty),
+                    input_schema: tool.get("inputSchema").cloned(),
+                });
+            }
+            out
         }
-    }
+    }))
+    .buffer_unordered(concurrency)
+    .collect::<Vec<Vec<KamiwazaTool>>>()
+    .await
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
+
     discovered.sort_by(|left, right| left.slug.cmp(&right.slug));
     Ok(discovered)
 }
@@ -620,14 +726,19 @@ pub async fn invoke_tool(
         &call,
     )
     .await;
-    close_mcp_session(
-        &client,
-        &discovered.mcp_url,
-        &token,
-        session_id.as_deref(),
-        delegation.as_ref(),
-    )
-    .await;
+    // Each MCP round-trip through the platform ingress is slow (seconds), so
+    // the best-effort session close is detached and not awaited on the call's
+    // critical path; the result is already in hand.
+    if let Some(session_id) = session_id {
+        let client = client.clone();
+        let mcp_url = discovered.mcp_url.clone();
+        let token = token.clone();
+        let delegation = delegation.clone();
+        tokio::spawn(async move {
+            close_mcp_session(&client, &mcp_url, &token, Some(&session_id), delegation.as_ref())
+                .await;
+        });
+    }
     let payload = result?.1;
     if let Some(error) = payload.get("error") {
         return Err(KamiwazaError::Protocol(format!(
@@ -785,4 +896,35 @@ pub fn filtered_response_headers(headers: &HeaderMap) -> HeaderMap {
         }
     }
     response_headers
+}
+
+#[cfg(test)]
+mod extension_name_match_tests {
+    use super::extension_name_matches;
+
+    #[test]
+    fn exact_name_matches_only_itself() {
+        assert!(extension_name_matches("tool-serperdev-kz1", "tool-serperdev-kz1"));
+        assert!(!extension_name_matches("tool-serperdev-kz1", "tool-serperdev-oc2"));
+    }
+
+    #[test]
+    fn trailing_suffix_wildcard_scopes_to_one_runtime() {
+        assert!(extension_name_matches("*-agentzero", "tool-serperdev-agentzero"));
+        assert!(extension_name_matches("*-agentzero", "tool-untrusted-content-agentzero"));
+        assert!(!extension_name_matches("*-agentzero", "tool-serperdev-kz1"));
+        assert!(!extension_name_matches("*-agentzero", "tool-serperdev-agentzero-2"));
+    }
+
+    #[test]
+    fn leading_and_interior_wildcards() {
+        assert!(extension_name_matches("tool-serperdev-*", "tool-serperdev-kz1"));
+        assert!(extension_name_matches("tool-*-kz1", "tool-serperdev-kz1"));
+        assert!(!extension_name_matches("tool-serperdev-*", "tool-telegram-kz1"));
+    }
+
+    #[test]
+    fn case_insensitive() {
+        assert!(extension_name_matches("*-AgentZero", "tool-serperdev-agentzero"));
+    }
 }
