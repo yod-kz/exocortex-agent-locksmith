@@ -12,7 +12,7 @@ This document is the cold-start context for the next session. Read top to bottom
 
 | Branch | State | What's there |
 |--------|-------|--------------|
-| `main` | Stable | M0 implementation. CI passes. |
+| `main` | **v2.6.0** | Tracks releases through v2.6.0 (M0..M7 + Phase E/F/G/G2-G5 + H + I). CI passes. |
 | `develop` | **v1.1.0** | M0..M7 + post-v1.0.0 #67 (agent-listener mTLS bind path activated) + #68 (audit-write bench validated A-2 / INF-26). Tagged **v1.1.0**. |
 | `feature/m9-proxy-bearer-acl` | **In review (v2.0.0)** | M9 / B1 closure. Per-agent bearer enforcement on the proxy hot path; tool ACL gate; uniform §4.7.9 error envelope; `inbound_auth.token` deprecation when admin substrate is enabled. **Breaking change** — merge tags v2.0.0. |
 | `m3/audit-pipeline`, `m4/admin-https`, `m5/keys-at-rest`, `m6/mtls-agent-side`, `m7/response-controls` | Merged | Kept for archaeology. |
