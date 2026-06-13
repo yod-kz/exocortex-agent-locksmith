@@ -1,8 +1,11 @@
-//! Phase G3 — codex Responses API body fixup.
+//! Phase G3/G5 — codex Responses API body fixup.
 //!
 //! OpenAI's `/backend-api/codex/responses` endpoint (the path that
-//! backs codex CLI's Responses API) requires three body fields the
-//! agent doesn't necessarily set:
+//! backs codex CLI's Responses API) has stricter body requirements
+//! than the generic OpenAI Responses API. Locksmith encodes the
+//! upstream-specific quirks so agents can stay generic.
+//!
+//! ## Phase G3 — required fields
 //!
 //! - `instructions` (string, required) — the system-prompt analog.
 //! - `store: false` — codex rejects `true`; no agent has a legitimate
@@ -10,15 +13,27 @@
 //! - `stream: true` — codex rejects `false`; the endpoint is
 //!   fundamentally streaming.
 //!
-//! Native codex CLI sets all three because it's codex-aware.
+//! ## Phase G5 — forbidden fields (strip on the way out)
+//!
+//! - `max_output_tokens` — codex returns 400 with body
+//!   `{"detail":"Unsupported parameter: max_output_tokens"}` when set
+//!   (ChatGPT-plan output is metered server-side, not by the client).
+//!   OpenAI SDK clients (e.g. openclaw, embedded `OpenAI/JS`) emit
+//!   this from per-model `maxTokens` config without knowing the
+//!   codex-specific rejection. Stripping it here lets agents keep
+//!   their generic per-model max-tokens configuration without
+//!   carving out a special case for codex.
+//!
+//! Native codex CLI handles all of these because it's codex-aware.
 //! Hermes-agent and openclaw, when proxied through locksmith, send a
-//! generic OpenAI-compatible body that misses these — chatgpt.com
-//! returns 400. Phase G2 owns the `ChatGPT-Account-ID` header; G3
-//! owns the body quirks. Same trust-model premise: locksmith encodes
-//! upstream-specific behavior so agents can stay generic.
+//! generic OpenAI-compatible body — chatgpt.com 400s. Phase G2 owns
+//! the `ChatGPT-Account-ID` header; G3 owns the missing-field quirks;
+//! G5 owns the forbidden-field quirks. Same trust-model premise:
+//! locksmith encodes upstream-specific behavior so agents stay generic.
 //!
 //! See agents-stack/docs/spec/v0.2.0.md "Codex body fixup (Phase G3)"
-//! for the formal design and the G3 addendum to ADR-0005.
+//! for the original formal design and the G3 addendum to ADR-0005.
+//! G5 follows the same shape; addendum lives alongside.
 
 use serde_json::{Map, Value};
 
@@ -47,11 +62,17 @@ pub enum CodexBodyError {
 pub struct FixupSummary {
     pub fields_added: Vec<&'static str>,
     pub fields_overridden: Vec<&'static str>,
+    /// Phase G5 — fields stripped before forwarding because codex
+    /// rejects them outright. Audit emits this so operators can
+    /// trace why their request shape was modified.
+    pub fields_removed: Vec<&'static str>,
 }
 
 impl FixupSummary {
     pub fn is_noop(&self) -> bool {
-        self.fields_added.is_empty() && self.fields_overridden.is_empty()
+        self.fields_added.is_empty()
+            && self.fields_overridden.is_empty()
+            && self.fields_removed.is_empty()
     }
 }
 
@@ -83,6 +104,7 @@ pub fn fixup(body: &[u8]) -> Result<(Vec<u8>, FixupSummary), CodexBodyError> {
     apply_store_rule(&mut map, &mut summary);
     apply_stream_rule(&mut map, &mut summary);
     apply_instructions_rule(&mut map, &mut summary);
+    apply_max_output_tokens_rule(&mut map, &mut summary);
 
     if summary.is_noop() {
         // Avoid re-serializing when we didn't change anything —
@@ -130,6 +152,15 @@ fn apply_instructions_rule(map: &mut Map<String, Value>, summary: &mut FixupSumm
             Value::String(DEFAULT_INSTRUCTIONS.to_string()),
         );
         summary.fields_added.push("instructions");
+    }
+}
+
+fn apply_max_output_tokens_rule(map: &mut Map<String, Value>, summary: &mut FixupSummary) {
+    // Phase G5 — codex /responses returns 400 with body
+    // `{"detail":"Unsupported parameter: max_output_tokens"}` when
+    // this is set. Strip it silently; agents stay generic.
+    if map.remove("max_output_tokens").is_some() {
+        summary.fields_removed.push("max_output_tokens");
     }
 }
 
@@ -274,5 +305,65 @@ mod tests {
         let mut s = FixupSummary::default();
         s.fields_added.push("x");
         assert!(!s.is_noop());
+        let mut s = FixupSummary::default();
+        s.fields_overridden.push("x");
+        assert!(!s.is_noop());
+        let mut s = FixupSummary::default();
+        s.fields_removed.push("x");
+        assert!(!s.is_noop());
+    }
+
+    // Phase G5 — codex rejects max_output_tokens; locksmith strips it.
+    #[test]
+    fn max_output_tokens_is_stripped() {
+        let body = json!({
+            "store": false,
+            "stream": true,
+            "instructions": "x",
+            "max_output_tokens": 16384,
+        })
+        .to_string();
+        let (out, summary) = fixup(body.as_bytes()).unwrap();
+        let v = parse(&out);
+        assert!(
+            v.get("max_output_tokens").is_none(),
+            "max_output_tokens must be stripped from forwarded body"
+        );
+        assert!(summary.fields_removed.contains(&"max_output_tokens"));
+        assert!(summary.fields_added.is_empty());
+        assert!(summary.fields_overridden.is_empty());
+    }
+
+    #[test]
+    fn max_output_tokens_absent_is_noop_for_g5() {
+        let body = json!({
+            "store": false,
+            "stream": true,
+            "instructions": "x",
+        })
+        .to_string();
+        let (_out, summary) = fixup(body.as_bytes()).unwrap();
+        assert!(
+            !summary.fields_removed.contains(&"max_output_tokens"),
+            "absent param must not be reported as removed"
+        );
+    }
+
+    #[test]
+    fn max_output_tokens_stripped_alongside_g3_additions() {
+        // Empty input gets G3 additions (store/stream/instructions);
+        // explicit max_output_tokens still stripped in same pass.
+        let body = json!({"max_output_tokens": 0}).to_string();
+        let (out, summary) = fixup(body.as_bytes()).unwrap();
+        let v = parse(&out);
+        assert!(v.get("max_output_tokens").is_none());
+        assert_eq!(v["store"], Value::Bool(false));
+        assert_eq!(v["stream"], Value::Bool(true));
+        assert_eq!(v["instructions"], Value::String(DEFAULT_INSTRUCTIONS.into()));
+        assert_eq!(
+            summary.fields_added,
+            vec!["store", "stream", "instructions"]
+        );
+        assert_eq!(summary.fields_removed, vec!["max_output_tokens"]);
     }
 }

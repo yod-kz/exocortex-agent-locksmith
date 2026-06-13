@@ -417,12 +417,34 @@ async fn skill_handler(
     State(state): State<Arc<AppState>>,
     req: axum::extract::Request,
 ) -> impl IntoResponse {
-    match req.extensions().get::<crate::auth_v2::AgentIdentity>() {
-        Some(identity) => {
-            let config = state.config.load();
-            let resolved = state.resolved_creds.load();
+    let identity = req
+        .extensions()
+        .get::<crate::auth_v2::AgentIdentity>()
+        .cloned();
+    match identity {
+        Some(ref id) => {
+            // Source of truth: same path /tools uses (catalog_listing
+            // over the registrations table when wired, fallback to
+            // legacy config.tools when not). Pre-Phase-E this returned
+            // legacy ToolConfig entries via config.active_tools_against;
+            // post-Phase-E that always returned empty for catalog
+            // deployments because tools live in the registrations table.
+            let listing =
+                catalog_listing(&state, Some(id), crate::registrations::Kind::Tool).await;
+            let available: Vec<(String, String)> = listing
+                .into_iter()
+                .filter_map(|v| {
+                    let name = v.get("name")?.as_str()?.to_string();
+                    let description = v
+                        .get("description")
+                        .and_then(|d| d.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    Some((name, description))
+                })
+                .collect();
             skill_response(
-                crate::skill::render_authenticated(identity, &config, &resolved),
+                crate::skill::render_authenticated(id, &available),
                 "private, no-cache, no-store",
             )
         }

@@ -412,3 +412,67 @@ async fn g3_proxy_skips_munge_when_upstream_is_not_codex() {
         "non-codex upstream: no fixup field on audit, got {details:?}"
     );
 }
+
+// Phase G5 — codex /responses returns 400 with body
+// `{"detail":"Unsupported parameter: max_output_tokens"}` when the param
+// is set. OpenAI SDK clients (openclaw's openai-transport-stream,
+// hermes-agent's embedded OpenAI/JS) emit it from per-model maxTokens
+// config without knowing the codex-specific rejection. Locksmith strips
+// it on the way out so agents stay generic.
+#[tokio::test]
+async fn g5_proxy_strips_max_output_tokens_for_codex() {
+    let h = setup().await;
+
+    // Mock matches the post-fixup body shape (G3 fields present);
+    // wire-side absence of max_output_tokens is verified via the
+    // captured request body assertion below. body_partial_json
+    // would silently pass with extra fields, so the strip itself is
+    // verified through the audit row's fields_removed entry.
+    Mock::given(method("POST"))
+        .and(path("/backend-api/codex/responses"))
+        .and(body_partial_json(json!({
+            "store": false,
+            "stream": true,
+            "instructions": "You are a helpful assistant.",
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_string("ok"))
+        .mount(&h.mock)
+        .await;
+
+    let resp = h
+        .server
+        .post("/api/codex/responses")
+        .add_header("authorization", &h.bearer_header)
+        .json(&json!({
+            "model": "gpt-5.5",
+            "input": [{"type": "message", "role": "user", "content": "hi"}],
+            "max_output_tokens": 16384,
+        }))
+        .await;
+    resp.assert_status_ok();
+
+    let details = latest_proxy_request_details(&h.audit).await;
+    let fixup = details
+        .get("codex_body_fixup")
+        .expect("codex_body_fixup present (G5 strip happened)");
+    let removed: Vec<&str> = fixup["fields_removed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert!(
+        removed.contains(&"max_output_tokens"),
+        "audit must report max_output_tokens removed; got fixup={fixup:?}"
+    );
+
+    // Belt + suspenders: pull the actual request bytes wiremock
+    // captured and confirm max_output_tokens isn't in there.
+    let received = h.mock.received_requests().await.expect("mock recorded");
+    let last = received.last().expect("at least one request");
+    let body_str = std::str::from_utf8(&last.body).expect("utf8");
+    assert!(
+        !body_str.contains("max_output_tokens"),
+        "forwarded body must not contain max_output_tokens; got: {body_str}"
+    );
+}

@@ -363,6 +363,7 @@ pub async fn proxy_handler(
                     ctx.codex_body_fixup = Some(serde_json::json!({
                         "fields_added": summary.fields_added,
                         "fields_overridden": summary.fields_overridden,
+                        "fields_removed": summary.fields_removed,
                     }));
                 }
                 Bytes::from(new_body)
