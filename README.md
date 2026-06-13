@@ -9,7 +9,7 @@ The keystone component of the [layer8-proxy][layer8] stack.
 
 [layer8]: https://github.com/SentientSwarm/layer8-proxy
 
-**Current version: v2.4.0** ([release notes](https://github.com/SentientSwarm/agent-locksmith/releases/tag/v2.4.0))
+**Current version: v2.6.0** ([release notes](https://github.com/SentientSwarm/agent-locksmith/releases/tag/v2.6.0))
 
 ## What it does
 
@@ -26,7 +26,7 @@ The agent discovers available tools via `GET /tools` (kind=tool) and
 `GET /models` (kind=model). Discovery is per-agent ACL-filtered. Internal
 middleware (`kind=infra`) is operator-only.
 
-## Highlights (v2.4.0)
+## Highlights (v2.6.0)
 
 - **Kind-discriminated registrations (Phase E)** — `model` / `tool` / `infra`
   taxonomy. Agents reason about LLMs vs service tools differently;
