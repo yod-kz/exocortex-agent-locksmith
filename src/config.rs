@@ -13,6 +13,14 @@ pub struct AppConfig {
     pub listen: ListenConfig,
     pub inbound_auth: Option<InboundAuthConfig>,
     pub egress_proxy: Option<String>,
+    /// Upstream TLS trust (optional). Lets operators trust a private/
+    /// internal CA for upstream verification — needed for HTTPS upstreams
+    /// behind an internal CA (e.g. Kamiwaza's "Kamiwaza Application
+    /// Intermediate CA"). reqwest is built with rustls + webpki bundled
+    /// roots, which ignore the system trust store, so a mounted CA only
+    /// takes effect when named here. Adds to the built-in roots; never
+    /// disables verification.
+    pub tls: Option<TlsConfig>,
     pub logging: Option<LoggingConfig>,
     #[serde(default)]
     pub shutdown: ShutdownConfig,
@@ -35,6 +43,19 @@ pub struct AppConfig {
 #[serde(deny_unknown_fields)]
 pub struct DatabaseConfig {
     pub path: PathBuf,
+}
+
+/// Upstream TLS trust configuration. Currently a single knob: an extra
+/// CA bundle (PEM, one or more certs) added to reqwest's root store for
+/// verifying HTTPS upstreams. Never disables verification — there is no
+/// accept-invalid-certs escape hatch by design (a credential proxy must
+/// not silently MITM-expose injected secrets).
+#[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct TlsConfig {
+    /// Path to a PEM bundle whose certificate(s) are added to the
+    /// built-in webpki roots for upstream verification.
+    pub upstream_ca_bundle: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize, Clone)]

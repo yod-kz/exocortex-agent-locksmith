@@ -51,4 +51,23 @@ tools: []
     assert!(config.egress_proxy.is_none());
     assert!(config.inbound_auth.is_none());
     assert!(config.logging.is_none());
+    assert!(config.tls.is_none());
+}
+
+#[test]
+fn test_tls_upstream_ca_bundle_parses() {
+    let yaml = r#"
+listen:
+  host: "127.0.0.1"
+  port: 9200
+tls:
+  upstream_ca_bundle: "/etc/locksmith/ca/kamiwaza-ca.pem"
+tools: []
+"#;
+    let config = parse_config_str(yaml).unwrap();
+    let tls = config.tls.expect("tls section present");
+    assert_eq!(
+        tls.upstream_ca_bundle.as_deref(),
+        Some(std::path::Path::new("/etc/locksmith/ca/kamiwaza-ca.pem")),
+    );
 }
