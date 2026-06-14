@@ -1,6 +1,6 @@
 [package]
 name = "agent-locksmith"
-version = "2.6.0"
+version = "2.7.0"
 edition = "2024"
 description = "Secure proxy for AI agent tool access with credential injection"
 license = "MIT"

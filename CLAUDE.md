@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Working branch
 
-`develop` is the default working branch — currently at **v2.6.0**
+`develop` is the default working branch — currently at **v2.7.0**
 (catalog substrate + per-agent ACL + mTLS + OAuth credential variant
 + per-agent credential overrides + OAuth session labels + complete
 codex transparent integration through Phase G2/G3/G4/G5). `main` tracks
@@ -47,6 +47,11 @@ Recent phase shipments on develop:
   `kind=model` registrations (no taxonomy change — agents-stack
   ADR-0007); the ingress itself is config-only. Design:
   `agents-stack/docs/spec/v0.4.0-agent-connectivity.md`.
+- **Upstream CA trust** (v2.7.0): optional `tls.upstream_ca_bundle`
+  config adds a private/internal CA to reqwest's roots so locksmith can
+  verify HTTPS upstreams behind an internal CA. Enables the Kamiwaza MCP
+  passthrough (layer8-proxy `examples/site/scripts/kamiwaza-mcp-registrar.py`).
+  Adds roots only; never disables verification.
 
 The authoritative stack-level docs live at `agents-stack/docs/`:
 

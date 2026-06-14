@@ -168,6 +168,15 @@ fn build_client_for(timeouts: ToolTimeouts, egress: EgressMode, config: &AppConf
         .timeout(Duration::from_secs(timeouts.request_seconds))
         .read_timeout(Duration::from_secs(timeouts.idle_seconds));
 
+    // Extra upstream-CA trust (e.g. an internal CA in front of an HTTPS
+    // upstream). reqwest's rustls+webpki roots ignore the system store,
+    // so private CAs must be named explicitly; this only ADDS roots.
+    if let Some(tls) = &config.tls
+        && let Some(ca_path) = &tls.upstream_ca_bundle
+    {
+        builder = add_ca_bundle(builder, ca_path);
+    }
+
     if matches!(egress, EgressMode::Proxied)
         && let Some(proxy_url) = &config.egress_proxy
         && let Ok(proxy) = reqwest::Proxy::all(proxy_url)
@@ -176,6 +185,66 @@ fn build_client_for(timeouts: ToolTimeouts, egress: EgressMode, config: &AppConf
     }
 
     builder.build().unwrap_or_else(|_| Client::new())
+}
+
+/// Add each PEM certificate in `ca_path` to the client's root store.
+/// Failures degrade to built-in-roots-only with a warning (never a hard
+/// error and never accept-invalid-certs — a missing CA file must not
+/// silently disable verification).
+fn add_ca_bundle(
+    mut builder: reqwest::ClientBuilder,
+    ca_path: &std::path::Path,
+) -> reqwest::ClientBuilder {
+    let pem = match std::fs::read(ca_path) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(
+                path = %ca_path.display(), error = %e,
+                "tls.upstream_ca_bundle unreadable; using built-in roots only",
+            );
+            return builder;
+        }
+    };
+    let mut added = 0usize;
+    for block in split_pem_certificates(&pem) {
+        match reqwest::Certificate::from_pem(&block) {
+            Ok(cert) => {
+                builder = builder.add_root_certificate(cert);
+                added += 1;
+            }
+            Err(e) => tracing::warn!(error = %e, "skipping malformed cert in upstream_ca_bundle"),
+        }
+    }
+    if added == 0 {
+        tracing::warn!(path = %ca_path.display(), "no usable certs in upstream_ca_bundle");
+    } else {
+        tracing::info!(path = %ca_path.display(), count = added, "added upstream CA root(s)");
+    }
+    builder
+}
+
+/// Split a PEM file into individual `BEGIN/END CERTIFICATE` blocks so each
+/// can be handed to `reqwest::Certificate::from_pem` (which takes one cert).
+fn split_pem_certificates(pem: &[u8]) -> Vec<Vec<u8>> {
+    let text = String::from_utf8_lossy(pem);
+    let mut certs = Vec::new();
+    let mut current = String::new();
+    let mut in_cert = false;
+    for line in text.lines() {
+        if line.contains("BEGIN CERTIFICATE") {
+            in_cert = true;
+            current.clear();
+        }
+        if in_cert {
+            current.push_str(line);
+            current.push('\n');
+        }
+        if line.contains("END CERTIFICATE") {
+            in_cert = false;
+            certs.push(current.as_bytes().to_vec());
+        }
+    }
+    certs
 }
 
 #[cfg(test)]
@@ -257,5 +326,38 @@ tools: []
         assert_eq!(pool.len(), 2);
         pool.cleanup_removed(&["anthropic"]);
         assert_eq!(pool.len(), 1);
+    }
+
+    #[test]
+    fn split_pem_certificates_handles_bundle_and_junk() {
+        // Two cert blocks separated by junk + leading/trailing noise.
+        let pem = b"# comment\n\
+            -----BEGIN CERTIFICATE-----\nAAAA\nBBBB\n-----END CERTIFICATE-----\n\
+            some junk between\n\
+            -----BEGIN CERTIFICATE-----\nCCCC\n-----END CERTIFICATE-----\ntrailing\n";
+        let blocks = split_pem_certificates(pem);
+        assert_eq!(blocks.len(), 2, "two cert blocks");
+        let first = String::from_utf8_lossy(&blocks[0]);
+        assert!(first.starts_with("-----BEGIN CERTIFICATE-----"));
+        assert!(first.trim_end().ends_with("-----END CERTIFICATE-----"));
+        assert!(first.contains("AAAA") && first.contains("BBBB"));
+        assert!(!first.contains("junk"));
+        assert!(String::from_utf8_lossy(&blocks[1]).contains("CCCC"));
+    }
+
+    #[test]
+    fn split_pem_certificates_empty_on_no_certs() {
+        assert!(split_pem_certificates(b"no certs here\n").is_empty());
+    }
+
+    #[test]
+    fn unreadable_ca_bundle_degrades_to_builtin_roots() {
+        // A missing CA file must NOT hard-fail or disable verification —
+        // build still yields a usable client (built-in roots only).
+        let builder = add_ca_bundle(
+            Client::builder(),
+            std::path::Path::new("/nonexistent/ca.pem"),
+        );
+        assert!(builder.build().is_ok());
     }
 }
