@@ -338,7 +338,21 @@ pub async fn proxy_handler(
 
     let config = state.config.load();
     let upstream_host = url_host(&target.upstream);
-    let upstream_url = format!("{}/{}", target.upstream.trim_end_matches('/'), path);
+    // Forward the inbound query string to the upstream. Axum's `{*path}`
+    // capture excludes the query, so without this any GET that relies on
+    // query params (e.g. ComfyUI `/view?filename=...`, paginated/filtered
+    // REST APIs) would reach the upstream stripped and typically 404.
+    let upstream_url = match req.uri().query() {
+        Some(query) if !query.is_empty() => {
+            format!(
+                "{}/{}?{}",
+                target.upstream.trim_end_matches('/'),
+                path,
+                query
+            )
+        }
+        _ => format!("{}/{}", target.upstream.trim_end_matches('/'), path),
+    };
     let method = req.method().clone();
     let headers = req.headers().clone();
     let body_bytes = match read_request_body(req, target.body_limit_bytes).await {
@@ -1501,7 +1515,9 @@ mod request_path_responses_tests {
     fn matches_canonical_responses_path() {
         assert!(request_path_ends_with_responses("/responses"));
         assert!(request_path_ends_with_responses("/api/codex/responses"));
-        assert!(request_path_ends_with_responses("/backend-api/codex/responses"));
+        assert!(request_path_ends_with_responses(
+            "/backend-api/codex/responses"
+        ));
     }
 
     #[test]

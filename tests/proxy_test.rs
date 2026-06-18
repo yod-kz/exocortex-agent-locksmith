@@ -1,7 +1,7 @@
 use agent_locksmith::app::build_app;
 use agent_locksmith::config::parse_config_str;
 use axum_test::{TestResponse, TestServer};
-use wiremock::matchers::{header, method, path};
+use wiremock::matchers::{header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 #[tokio::test]
@@ -43,6 +43,49 @@ tools:
     resp.assert_status_ok();
     let body: serde_json::Value = resp.json();
     assert_eq!(body["name"], "test-repo");
+}
+
+#[tokio::test]
+async fn test_proxy_forwards_query_string() {
+    // Regression: axum's `{*path}` capture excludes the query string, so the
+    // proxy must re-attach it. Without forwarding, ComfyUI `/view?filename=…`
+    // (and any query-driven GET) reaches the upstream stripped and 404s.
+    let mock = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/view"))
+        .and(query_param("filename", "img_00001_.png"))
+        .and(query_param("type", "output"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("PNGBYTES"))
+        .mount(&mock)
+        .await;
+
+    let yaml = format!(
+        r#"
+listen:
+  host: "127.0.0.1"
+  port: 9200
+tools:
+  - name: "comfyui"
+    description: "ComfyUI"
+    upstream: "{}"
+    auth:
+      header: "Authorization"
+      value: "Bearer x"
+    timeout_seconds: 30
+"#,
+        mock.uri()
+    );
+
+    let config = parse_config_str(&yaml).unwrap();
+    let app = build_app(config);
+    let server = TestServer::new(app);
+
+    let resp: TestResponse = server
+        .get("/api/comfyui/view?filename=img_00001_.png&type=output")
+        .await;
+    resp.assert_status_ok();
+    assert_eq!(resp.text(), "PNGBYTES");
 }
 
 #[tokio::test]
