@@ -344,7 +344,12 @@ pub async fn proxy_handler(
     // REST APIs) would reach the upstream stripped and typically 404.
     let upstream_url = match req.uri().query() {
         Some(query) if !query.is_empty() => {
-            format!("{}/{}?{}", target.upstream.trim_end_matches('/'), path, query)
+            format!(
+                "{}/{}?{}",
+                target.upstream.trim_end_matches('/'),
+                path,
+                query
+            )
         }
         _ => format!("{}/{}", target.upstream.trim_end_matches('/'), path),
     };
@@ -1510,7 +1515,9 @@ mod request_path_responses_tests {
     fn matches_canonical_responses_path() {
         assert!(request_path_ends_with_responses("/responses"));
         assert!(request_path_ends_with_responses("/api/codex/responses"));
-        assert!(request_path_ends_with_responses("/backend-api/codex/responses"));
+        assert!(request_path_ends_with_responses(
+            "/backend-api/codex/responses"
+        ));
     }
 
     #[test]

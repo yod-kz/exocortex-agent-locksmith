@@ -112,8 +112,8 @@ pub fn fixup(body: &[u8]) -> Result<(Vec<u8>, FixupSummary), CodexBodyError> {
         return Ok((body.to_vec(), summary));
     }
 
-    let new_body = serde_json::to_vec(&Value::Object(map))
-        .expect("re-serializing a parsed Value cannot fail");
+    let new_body =
+        serde_json::to_vec(&Value::Object(map)).expect("re-serializing a parsed Value cannot fail");
     Ok((new_body, summary))
 }
 
@@ -179,7 +179,10 @@ mod tests {
         let v = parse(&out);
         assert_eq!(v["store"], Value::Bool(false));
         assert_eq!(v["stream"], Value::Bool(true));
-        assert_eq!(v["instructions"], Value::String(DEFAULT_INSTRUCTIONS.into()));
+        assert_eq!(
+            v["instructions"],
+            Value::String(DEFAULT_INSTRUCTIONS.into())
+        );
         assert_eq!(
             summary.fields_added,
             vec!["store", "stream", "instructions"]
@@ -201,7 +204,10 @@ mod tests {
     fn store_false_is_preserved_no_override() {
         let body = json!({"store": false, "stream": true, "instructions": "x"}).to_string();
         let (_out, summary) = fixup(body.as_bytes()).unwrap();
-        assert!(summary.is_noop(), "store/stream/instructions all valid → noop");
+        assert!(
+            summary.is_noop(),
+            "store/stream/instructions all valid → noop"
+        );
     }
 
     #[test]
@@ -359,7 +365,10 @@ mod tests {
         assert!(v.get("max_output_tokens").is_none());
         assert_eq!(v["store"], Value::Bool(false));
         assert_eq!(v["stream"], Value::Bool(true));
-        assert_eq!(v["instructions"], Value::String(DEFAULT_INSTRUCTIONS.into()));
+        assert_eq!(
+            v["instructions"],
+            Value::String(DEFAULT_INSTRUCTIONS.into())
+        );
         assert_eq!(
             summary.fields_added,
             vec!["store", "stream", "instructions"]

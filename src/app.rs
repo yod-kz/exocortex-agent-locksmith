@@ -429,8 +429,7 @@ async fn skill_handler(
             // legacy ToolConfig entries via config.active_tools_against;
             // post-Phase-E that always returned empty for catalog
             // deployments because tools live in the registrations table.
-            let listing =
-                catalog_listing(&state, Some(id), crate::registrations::Kind::Tool).await;
+            let listing = catalog_listing(&state, Some(id), crate::registrations::Kind::Tool).await;
             let available: Vec<(String, String)> = listing
                 .into_iter()
                 .filter_map(|v| {
