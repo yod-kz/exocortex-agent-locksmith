@@ -4,11 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Working branch
 
-`develop` is the default working branch — currently at **v2.7.0**
+`develop` is the default working branch — currently at **v2.7.1**
 (catalog substrate + per-agent ACL + mTLS + OAuth credential variant
 + per-agent credential overrides + OAuth session labels + complete
 codex transparent integration through Phase G2/G3/G4/G5). `main` tracks
-releases (promoted from `develop` at release time; currently at v2.6.0).
+releases (promoted from `develop` at release time; currently at v2.7.1).
 Cut feature branches from `develop`.
 
 Recent phase shipments on develop:
@@ -52,6 +52,11 @@ Recent phase shipments on develop:
   verify HTTPS upstreams behind an internal CA. Enables the Kamiwaza MCP
   passthrough (layer8-proxy `examples/site/scripts/kamiwaza-mcp-registrar.py`).
   Adds roots only; never disables verification.
+- **Query-string forwarding** (v2.7.1): `proxy_handler` re-attaches the
+  inbound query string (`req.uri().query()`) to the upstream URL — axum's
+  `{*path}` capture excludes it, so query-driven GETs (ComfyUI
+  `/view?filename=...`, paginated/filtered REST APIs) reached the upstream
+  stripped and 404'd. Regression test `test_proxy_forwards_query_string`.
 
 The authoritative stack-level docs live at `agents-stack/docs/`:
 

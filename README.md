@@ -9,7 +9,7 @@ The keystone component of the [layer8-proxy][layer8] stack.
 
 [layer8]: https://github.com/SentientSwarm/layer8-proxy
 
-**Current version: v2.7.0** ([release notes](https://github.com/SentientSwarm/agent-locksmith/releases/tag/v2.7.0))
+**Current version: v2.7.1** ([release notes](https://github.com/SentientSwarm/agent-locksmith/releases/tag/v2.7.1))
 
 ## What it does
 
@@ -26,7 +26,7 @@ The agent discovers available tools via `GET /tools` (kind=tool) and
 `GET /models` (kind=model). Discovery is per-agent ACL-filtered. Internal
 middleware (`kind=infra`) is operator-only.
 
-## Highlights (v2.7.0)
+## Highlights (v2.7.1)
 
 - **Kind-discriminated registrations (Phase E)** — `model` / `tool` / `infra`
   taxonomy. Agents reason about LLMs vs service tools differently;
@@ -86,6 +86,10 @@ middleware (`kind=infra`) is operator-only.
   adds a private/internal CA to the client root store so locksmith can
   verify HTTPS upstreams behind an internal CA (e.g. a Kamiwaza MCP
   endpoint). Adds roots only; verification is never disabled.
+- **Query-string forwarding (v2.7.1)** — the proxy now re-attaches the
+  inbound query string to the upstream URL. Query-driven GETs (e.g.
+  ComfyUI `/view?filename=...`, paginated/filtered REST APIs) previously
+  reached the upstream stripped and 404'd.
 
 ## Two-binary layout
 
