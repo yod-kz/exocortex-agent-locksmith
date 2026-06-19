@@ -25,7 +25,7 @@
 # DEFER and SKIP entries (~25 + ~10 categories) are listed there with
 # rationale; operators can register them via admin API today.
 
-version: "2.1.0"
+version: "2.1.1"
 
 entries:
   # ─── Models ─────────────────────────────────────────────────────────────
@@ -163,6 +163,22 @@ entries:
     metadata:
       capability: vcs
       provider: github
+
+  - name: slack
+    kind: tool
+    description: "Slack Web API"
+    upstream: "https://slack.com/api"
+    auth:
+      kind: bearer
+      env_var: SLACK_BOT_TOKEN
+    egress: proxied
+    timeouts:
+      request_seconds: 60
+      idle_seconds: 60
+    body_limit_bytes: 50000000
+    metadata:
+      capability: messaging
+      provider: slack
 
   - name: duckduckgo
     kind: tool

@@ -60,6 +60,18 @@ tools:
       idle_seconds: 60      # per-read inactivity timeout (matters for SSE)
     body_limit_bytes: 10485760
 
+  - name: "slack"
+    description: "Slack Web API"
+    upstream: "https://slack.com/api"
+    egress: "proxied"
+    auth:
+      header: "Authorization"
+      value: "Bearer ${SLACK_BOT_TOKEN}"
+    timeouts:
+      request_seconds: 60
+      idle_seconds: 60
+    body_limit_bytes: 10485760
+
   - name: "anthropic"
     description: "Anthropic Messages API (streaming)"
     upstream: "https://api.anthropic.com"
