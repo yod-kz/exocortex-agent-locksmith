@@ -85,6 +85,102 @@ tools:
 }
 
 #[tokio::test]
+async fn test_force_replace_strips_placeholder_and_injects_config_credential() {
+    unsafe {
+        std::env::set_var("LOCKSMITH_FORCE_REPLACE_TEST_TOKEN", "real-token");
+    }
+
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/auth.test"))
+        .and(header("Authorization", "Bearer real-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("ok"))
+        .mount(&mock)
+        .await;
+
+    let yaml = format!(
+        r#"
+listen:
+  host: "127.0.0.1"
+  port: 9200
+tools:
+  - name: "slack"
+    description: "Slack"
+    upstream: "{}"
+    auth:
+      header: "Authorization"
+      force_replace: true
+      value:
+        from_env:
+          var: "LOCKSMITH_FORCE_REPLACE_TEST_TOKEN"
+          prefix: "Bearer "
+"#,
+        mock.uri()
+    );
+
+    let config = parse_config_str(&yaml).unwrap();
+    let app = build_app(config);
+    let server = TestServer::new(app);
+
+    let resp: TestResponse = server
+        .get("/api/slack/auth.test")
+        .add_header("Authorization", "Bearer NA")
+        .await;
+    resp.assert_status_ok();
+    resp.assert_text("ok");
+
+    unsafe {
+        std::env::remove_var("LOCKSMITH_FORCE_REPLACE_TEST_TOKEN");
+    }
+}
+
+#[tokio::test]
+async fn test_force_replace_missing_credential_fails_closed() {
+    unsafe {
+        std::env::remove_var("LOCKSMITH_FORCE_REPLACE_MISSING_TOKEN");
+    }
+
+    let mock = MockServer::start().await;
+    let yaml = format!(
+        r#"
+listen:
+  host: "127.0.0.1"
+  port: 9200
+tools:
+  - name: "slack"
+    description: "Slack"
+    upstream: "{}"
+    auth:
+      header: "Authorization"
+      force_replace: true
+      value:
+        from_env:
+          var: "LOCKSMITH_FORCE_REPLACE_MISSING_TOKEN"
+          prefix: "Bearer "
+"#,
+        mock.uri()
+    );
+
+    let config = parse_config_str(&yaml).unwrap();
+    let app = build_app(config);
+    let server = TestServer::new(app);
+
+    let resp: TestResponse = server
+        .get("/api/slack/auth.test")
+        .add_header("Authorization", "Bearer NA")
+        .await;
+    resp.assert_status(axum::http::StatusCode::SERVICE_UNAVAILABLE);
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["error"]["code"], "credential_unavailable");
+
+    let received = mock.received_requests().await.unwrap_or_default();
+    assert!(
+        received.is_empty(),
+        "force_replace should not contact upstream"
+    );
+}
+
+#[tokio::test]
 async fn test_proxy_unknown_tool_404() {
     let yaml = r#"
 listen:

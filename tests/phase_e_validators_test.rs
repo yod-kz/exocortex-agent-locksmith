@@ -111,6 +111,7 @@ fn ts105_authspec_header_round_trips() {
     let header = AuthSpec::Header {
         header: "x-api-key".to_string(),
         env_var: "ANTHROPIC_API_KEY".to_string(),
+        force_replace: false,
     };
     let json = serde_json::to_string(&header).unwrap();
     let back: AuthSpec = serde_json::from_str(&json).unwrap();
@@ -128,6 +129,7 @@ fn ts105_authspec_header_round_trips() {
 fn ts106_authspec_bearer_round_trips() {
     let bearer = AuthSpec::Bearer {
         env_var: "OPENAI_API_KEY".to_string(),
+        force_replace: false,
     };
     let json = serde_json::to_string(&bearer).unwrap();
     let back: AuthSpec = serde_json::from_str(&json).unwrap();
@@ -147,6 +149,7 @@ fn ts106b_authspec_to_secret_ref() {
     let header = AuthSpec::Header {
         header: "x-api-key".to_string(),
         env_var: "ANTHROPIC_API_KEY".to_string(),
+        force_replace: false,
     };
     match header.to_secret_ref().unwrap() {
         SecretRef::FromEnv { var, prefix } => {
@@ -158,6 +161,7 @@ fn ts106b_authspec_to_secret_ref() {
 
     let bearer = AuthSpec::Bearer {
         env_var: "OPENAI_API_KEY".to_string(),
+        force_replace: false,
     };
     match bearer.to_secret_ref().unwrap() {
         SecretRef::FromEnv { var, prefix } => {

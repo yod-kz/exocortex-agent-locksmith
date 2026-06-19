@@ -72,6 +72,7 @@ async fn setup() -> Harness {
         mock.uri(),
         AuthSpec::Bearer {
             env_var: "LMSTUDIO_DEFAULT_KEY".to_string(),
+            force_replace: false,
         },
     );
     registrations.create(&r).await.unwrap();
@@ -124,6 +125,7 @@ async fn setup() -> Harness {
             "lmstudio",
             &AuthSpec::Bearer {
                 env_var: "LMSTUDIO_HERMES_KEY".to_string(),
+                force_replace: false,
             },
         )
         .await

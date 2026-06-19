@@ -64,7 +64,7 @@ calls. There is no separate auth scheme for this endpoint.
 | Layer | Locksmith handles | You handle |
 |---|---|---|
 | Auth (locksmith ↔ agent) | Validates your bearer; enforces ACL; emits audit row per request. | Send `Authorization: Bearer lk_…` on every request. |
-| Auth (locksmith ↔ upstream) | Strips your `Authorization` / `x-api-key` headers; injects the configured upstream credential (API key, OAuth access token, etc.). Refresh-ahead-of-expiry for OAuth providers. | Nothing. You never see the upstream credential. |
+| Auth (locksmith ↔ upstream) | Strips your `Authorization` / `x-api-key` headers; injects the configured upstream credential (API key, OAuth access token, etc.). If `force_replace` is enabled and the credential is missing, returns `503 credential_unavailable`. Refresh-ahead-of-expiry for OAuth providers. | Nothing. You never see the upstream credential. |
 | Wire framing | Recomputes `Content-Length` based on the body locksmith forwards. Strips `Transfer-Encoding` for the same reason. | Don't rely on your `Content-Length` reaching upstream — set the body, trust locksmith to frame it. |
 | Path routing | Strips `/api/<tool>` prefix; forwards the remainder to the configured upstream URL. | Construct request as `POST /api/<tool>/<upstream-path>` per the wire-shape of the upstream. |
 | Codex `ChatGPT-Account-ID` header | Extracts from JWT at OAuth bootstrap; injects on `/backend-api/codex/*` requests automatically (Phase G2). | Don't send it yourself — locksmith owns this. |

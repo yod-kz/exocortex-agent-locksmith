@@ -83,13 +83,15 @@ fn ts203_is_oauth_predicate() {
     assert!(
         !AuthSpec::Header {
             header: "x-api-key".into(),
-            env_var: "FOO".into()
+            env_var: "FOO".into(),
+            force_replace: false,
         }
         .is_oauth()
     );
     assert!(
         !AuthSpec::Bearer {
-            env_var: "FOO".into()
+            env_var: "FOO".into(),
+            force_replace: false,
         }
         .is_oauth()
     );

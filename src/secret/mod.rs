@@ -77,7 +77,7 @@ pub async fn resolve_tool_creds(
 /// Phase E.6 — resolve env-var references in a registrations
 /// catalog into the same `ResolvedCreds` shape used by config.tools.
 /// Walks every entry; for `AuthSpec::Header { env_var, .. }` and
-/// `AuthSpec::Bearer { env_var }`, reads the env var and inserts under
+/// `AuthSpec::Bearer { env_var, .. }`, reads the env var and inserts under
 /// the registration's name. Empty values and missing vars are
 /// skipped (proxy hot path treats absence as "tool inactive" same
 /// as for config.tools). `AuthSpec::None` entries skip credential
@@ -98,7 +98,7 @@ pub fn resolve_registration_creds_sync_env_only(
             let env_var = match &r.auth {
                 AuthSpec::None => continue,
                 AuthSpec::Header { env_var, .. } => env_var,
-                AuthSpec::Bearer { env_var } => env_var,
+                AuthSpec::Bearer { env_var, .. } => env_var,
                 // OAuth variants don't resolve via env-var indirection — their
                 // tokens live in the oauth_sessions cache, populated by the
                 // bootstrap CLI (Phase F.4) and refreshed by the daemon's

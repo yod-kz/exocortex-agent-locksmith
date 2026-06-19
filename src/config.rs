@@ -405,6 +405,11 @@ fn default_body_limit() -> u64 {
 #[serde(deny_unknown_fields)]
 pub struct ToolAuthConfig {
     pub header: String,
+    /// When true, a missing resolved credential is fail-closed: the proxy
+    /// returns `credential_unavailable` instead of forwarding without
+    /// replacement. Incoming auth-shaped headers are stripped either way.
+    #[serde(default)]
+    pub force_replace: bool,
     /// Credential reference (M5). Accepts both the legacy plain-string
     /// form (`value: "Bearer ${TOKEN}"`) and the typed forms (`value:
     /// { from_env: { var: ... } }`, `from_file_sealed`, etc.). See

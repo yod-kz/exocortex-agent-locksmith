@@ -12,9 +12,12 @@
 //!                         inference (Ollama, LM Studio) but rejects implicit absence.
 //!   `header`            — inject `<header>: <env-var-resolved-value>`. Used for
 //!                         `x-api-key`, custom headers, internal middleware tokens.
+//!                         `force_replace` makes an unresolved credential fail
+//!                         closed instead of forwarding without injection.
 //!   `bearer`            — inject `Authorization: Bearer <env-var-resolved-value>`.
 //!                         The `Bearer ` prefix is supplied by the runtime materializer,
-//!                         not stored in the env var.
+//!                         not stored in the env var. `force_replace` has the
+//!                         same fail-closed semantics as `header`.
 //!   `oauth_pkce`        — OAuth 2.0 with PKCE (Proof Key for Code Exchange). First-time
 //!                         auth via browser redirect; subsequent calls use the cached
 //!                         access token (refreshed transparently by the daemon). See
@@ -43,9 +46,13 @@ pub enum AuthSpec {
     Header {
         header: String,
         env_var: String,
+        #[serde(default, skip_serializing_if = "is_false")]
+        force_replace: bool,
     },
     Bearer {
         env_var: String,
+        #[serde(default, skip_serializing_if = "is_false")]
+        force_replace: bool,
     },
     /// OAuth 2.0 PKCE flow (RFC 7636). Used by anthropic-oauth,
     /// google-gemini-cli. First-time auth opens a browser to `auth_url`
@@ -147,7 +154,7 @@ impl AuthSpec {
     pub fn to_secret_ref(&self) -> Option<SecretRef> {
         match self {
             AuthSpec::None | AuthSpec::OauthPkce { .. } | AuthSpec::OauthDeviceCode { .. } => None,
-            AuthSpec::Header { env_var, .. } | AuthSpec::Bearer { env_var } => {
+            AuthSpec::Header { env_var, .. } | AuthSpec::Bearer { env_var, .. } => {
                 Some(SecretRef::FromEnv {
                     var: env_var.clone(),
                     prefix: None,
@@ -155,4 +162,21 @@ impl AuthSpec {
             }
         }
     }
+
+    /// Static auth registrations can opt into fail-closed replacement:
+    /// if the configured credential cannot be resolved, Locksmith returns
+    /// a 503 instead of forwarding the agent's placeholder credential or
+    /// an unauthenticated upstream request.
+    pub fn force_replace(&self) -> bool {
+        match self {
+            AuthSpec::Header { force_replace, .. } | AuthSpec::Bearer { force_replace, .. } => {
+                *force_replace
+            }
+            AuthSpec::None | AuthSpec::OauthPkce { .. } | AuthSpec::OauthDeviceCode { .. } => false,
+        }
+    }
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }

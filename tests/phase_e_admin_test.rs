@@ -298,6 +298,7 @@ async fn ts127_delete_seed_row_marks_disabled() {
         AuthSpec::Header {
             header: "x-api-key".to_string(),
             env_var: "K".to_string(),
+            force_replace: false,
         },
     );
     r.seed = true;

@@ -134,6 +134,10 @@ enum ProxyAuth {
     Header {
         header: String,
         audit_mode: &'static str,
+        /// Fail closed if the configured replacement credential is not
+        /// available. This supports SDKs that require a placeholder token
+        /// client-side while keeping the real credential outside the agent.
+        force_replace: bool,
         /// Phase G per-agent override (`None` for registration-default).
         override_value: Option<secrecy::SecretString>,
     },
@@ -144,6 +148,9 @@ enum ProxyAuth {
     /// `Header { header: "Authorization", ... }` because the legacy
     /// resolver may have already prefixed the value.
     Bearer {
+        /// Fail closed if the configured replacement credential is not
+        /// available. Incoming Authorization is stripped regardless.
+        force_replace: bool,
         /// Phase G per-agent override (`None` for registration-default).
         override_value: Option<secrecy::SecretString>,
     },
@@ -206,6 +213,25 @@ impl ProxyAuth {
             ProxyAuth::Oauth { .. } => None,  // F.5 will inject Authorization; always stripped
         }
     }
+
+    fn force_replace_missing(&self, state: &AppState, target_name: &str) -> bool {
+        match self {
+            ProxyAuth::Header {
+                force_replace,
+                override_value,
+                ..
+            }
+            | ProxyAuth::Bearer {
+                force_replace,
+                override_value,
+            } => {
+                *force_replace
+                    && override_value.is_none()
+                    && !state.resolved_creds.load().contains_key(target_name)
+            }
+            ProxyAuth::None | ProxyAuth::Oauth { .. } => false,
+        }
+    }
 }
 
 impl ProxyTarget {
@@ -219,12 +245,18 @@ impl ProxyTarget {
         // after the proxy_handler resolves the access token.
         let auth = match &r.auth {
             AuthSpec::None => ProxyAuth::None,
-            AuthSpec::Header { header, .. } => ProxyAuth::Header {
+            AuthSpec::Header {
+                header,
+                force_replace,
+                ..
+            } => ProxyAuth::Header {
                 header: header.clone(),
                 audit_mode: "header",
+                force_replace: *force_replace,
                 override_value: None,
             },
-            AuthSpec::Bearer { .. } => ProxyAuth::Bearer {
+            AuthSpec::Bearer { force_replace, .. } => ProxyAuth::Bearer {
+                force_replace: *force_replace,
                 override_value: None,
             },
             AuthSpec::OauthPkce { .. } | AuthSpec::OauthDeviceCode { .. } => {
@@ -269,6 +301,7 @@ impl ProxyTarget {
             Some(a) => ProxyAuth::Header {
                 header: a.header.clone(),
                 audit_mode: "config",
+                force_replace: a.force_replace,
                 override_value: None,
             },
         };
@@ -366,6 +399,9 @@ async fn proxy_tool_request(
     let upstream_url = format!("{}/{}", target.upstream.trim_end_matches('/'), path);
     let method = req.method().clone();
     let headers = req.headers().clone();
+    if target.auth.force_replace_missing(&state, &target.name) {
+        return record_credential_unavailable(&state.audit, &ctx, &target, upstream_host).await;
+    }
     let body_bytes = match read_request_body(req, target.body_limit_bytes).await {
         Ok(b) => b,
         Err(_) => {
@@ -584,7 +620,7 @@ fn build_upstream_request(
                 // proxy-side audit row.
             }
         }
-        ProxyAuth::Bearer { override_value } => {
+        ProxyAuth::Bearer { override_value, .. } => {
             if let Some(value) = override_value {
                 let header_value =
                     format!("Bearer {}", secrecy::ExposeSecret::expose_secret(value));
@@ -901,6 +937,37 @@ async fn record_body_read_error(
         .into_response()
 }
 
+/// Emit a fail-closed auth error when `force_replace=true` but the
+/// configured replacement credential was not resolved at startup.
+async fn record_credential_unavailable(
+    audit: &Option<AuditRepository>,
+    ctx: &RequestCtx,
+    target: &ProxyTarget,
+    upstream_host: Option<String>,
+) -> Response {
+    let mut event = ctx.audit_event_base();
+    event.event_class = EventClass::Proxy;
+    event.event = "credential_unavailable".to_string();
+    event.status = Some(503);
+    event.decision = Decision::Error;
+    event.upstream_host = upstream_host;
+    let mut details = audit_details(ctx, target);
+    details["credential_cause"] = json!("force_replace_missing_credential");
+    event.details = Some(details);
+    audit_record(audit, event).await;
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(json!({
+            "error": {
+                "message": "configured credential unavailable",
+                "type": "auth_error",
+                "code": "credential_unavailable"
+            }
+        })),
+    )
+        .into_response()
+}
+
 /// Phase G3 — emit a `proxy/codex_body_too_large` audit row + 413
 /// wire response when the codex Responses request body exceeds the
 /// 1 MiB cap. Tighter than the per-tool `body_limit_bytes`: this is
@@ -1206,11 +1273,11 @@ fn url_host(url: &str) -> Option<String> {
 ///
 /// Override `auth_spec` shapes:
 ///   - `AuthSpec::None` → `ProxyAuth::None`
-///   - `AuthSpec::Header { header, env_var }` → reads `env_var` directly
+///   - `AuthSpec::Header { header, env_var, .. }` → reads `env_var` directly
 ///     and stashes the value in `ProxyAuth::Header.override_value`.
 ///     Bypasses `resolved_creds` because per-agent overrides don't
 ///     participate in the startup-resolved creds map.
-///   - `AuthSpec::Bearer { env_var }` → same as Header but for the
+///   - `AuthSpec::Bearer { env_var, .. }` → same as Header but for the
 ///     `Authorization: Bearer ...` injection path.
 ///   - `AuthSpec::OauthPkce` / `OauthDeviceCode` → records the
 ///     `session_label` so `resolve_oauth_token` reads from a non-default
@@ -1246,7 +1313,11 @@ async fn apply_agent_credential_override(
         AuthSpec::None => {
             target.auth = ProxyAuth::None;
         }
-        AuthSpec::Header { header, env_var } => {
+        AuthSpec::Header {
+            header,
+            env_var,
+            force_replace,
+        } => {
             let value = std::env::var(&env_var)
                 .ok()
                 .map(secrecy::SecretString::from);
@@ -1261,10 +1332,14 @@ async fn apply_agent_credential_override(
             target.auth = ProxyAuth::Header {
                 header,
                 audit_mode: "header",
+                force_replace,
                 override_value: value,
             };
         }
-        AuthSpec::Bearer { env_var } => {
+        AuthSpec::Bearer {
+            env_var,
+            force_replace,
+        } => {
             let value = std::env::var(&env_var)
                 .ok()
                 .map(secrecy::SecretString::from);
@@ -1277,6 +1352,7 @@ async fn apply_agent_credential_override(
                 );
             }
             target.auth = ProxyAuth::Bearer {
+                force_replace,
                 override_value: value,
             };
         }

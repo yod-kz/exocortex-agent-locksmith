@@ -25,7 +25,7 @@
 # DEFER and SKIP entries (~25 + ~10 categories) are listed there with
 # rationale; operators can register them via admin API today.
 
-version: "2.1.1"
+version: "2.1.2"
 
 entries:
   # ─── Models ─────────────────────────────────────────────────────────────
@@ -155,6 +155,7 @@ entries:
     auth:
       kind: bearer
       env_var: GITHUB_TOKEN
+      force_replace: true
     egress: proxied
     timeouts:
       request_seconds: 60
@@ -171,6 +172,7 @@ entries:
     auth:
       kind: bearer
       env_var: SLACK_BOT_TOKEN
+      force_replace: true
     egress: proxied
     timeouts:
       request_seconds: 60

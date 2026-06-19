@@ -54,6 +54,7 @@ tools:
     egress: "proxied"   # internet-bound → Pipelock per D-16. M0's `cloud: true` still works.
     auth:
       header: "Authorization"
+      force_replace: true
       value: "Bearer ${GITHUB_TOKEN}"
     timeouts:
       request_seconds: 30   # total request timeout
@@ -66,6 +67,7 @@ tools:
     egress: "proxied"
     auth:
       header: "Authorization"
+      force_replace: true
       value: "Bearer ${SLACK_BOT_TOKEN}"
     timeouts:
       request_seconds: 60

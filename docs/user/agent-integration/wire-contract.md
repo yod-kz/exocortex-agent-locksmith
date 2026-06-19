@@ -153,12 +153,14 @@ segments after `tool_name` are forwarded as-is. So calling
 
 **Injected by locksmith**:
 
-- For `AuthSpec::Header { header, env_var }`: `<header>: <env-var-value>`
-- For `AuthSpec::Bearer { env_var }`: `Authorization: Bearer <env-var-value>`
+- For `AuthSpec::Header { header, env_var, force_replace }`: `<header>: <env-var-value>`
+- For `AuthSpec::Bearer { env_var, force_replace }`: `Authorization: Bearer <env-var-value>`
 - For OAuth: `Authorization: Bearer <access_token-from-cache>`
 - For `AuthSpec::None`: nothing.
 
-The agent never sees the injected credential.
+The agent never sees the injected credential. When `force_replace` is true and
+the configured replacement credential is unavailable, Locksmith returns
+`503 credential_unavailable` before contacting upstream.
 
 #### Streaming
 

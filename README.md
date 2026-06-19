@@ -294,6 +294,10 @@ tools: []
 - **Header stripping**: agent-sent `Authorization` / `x-api-key` are
   stripped before forwarding, defense-in-depth even when the
   registration is `auth: none`.
+- **Force replacement**: static header/bearer auth can set
+  `force_replace: true` so placeholder client credentials are stripped and
+  missing Locksmith-side credentials fail closed with
+  `503 credential_unavailable`.
 - **mTLS** (feature flag): client-cert authentication on the agent
   listener and admin HTTPS — independent settings.
 
