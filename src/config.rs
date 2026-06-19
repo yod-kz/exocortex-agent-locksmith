@@ -316,6 +316,12 @@ pub struct ToolConfig {
     pub upstream: String,
     #[serde(default)]
     pub egress: EgressMode,
+    /// Optional fake bearer tokens accepted by `/transport/{tool}/...`.
+    /// These are credential handles, not upstream credentials. The proxy
+    /// accepts them only for this tool, strips the incoming Authorization
+    /// header, then injects the configured tool credential on egress.
+    #[serde(default)]
+    pub credential_handles: Vec<String>,
     pub auth: Option<ToolAuthConfig>,
     #[serde(default)]
     pub timeouts: ToolTimeouts,

@@ -181,6 +181,162 @@ tools:
 }
 
 #[tokio::test]
+async fn test_credential_transport_accepts_fake_handle_and_injects_config_credential() {
+    unsafe {
+        std::env::set_var("LOCKSMITH_TRANSPORT_TEST_TOKEN", "real-slack-token");
+    }
+
+    let mock = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/auth.test"))
+        .and(header("Authorization", "Bearer real-slack-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"ok": true})))
+        .mount(&mock)
+        .await;
+
+    let yaml = format!(
+        r#"
+listen:
+  host: "127.0.0.1"
+  port: 9200
+inbound_auth:
+  mode: "bearer"
+  token: "locksmith-agent-token"
+tools:
+  - name: "slack-bot"
+    description: "Slack bot Web API"
+    upstream: "{}"
+    credential_handles:
+      - "xoxb-locksmith-fake"
+    auth:
+      header: "Authorization"
+      force_replace: true
+      value:
+        from_env:
+          var: "LOCKSMITH_TRANSPORT_TEST_TOKEN"
+          prefix: "Bearer "
+"#,
+        mock.uri()
+    );
+
+    let config = parse_config_str(&yaml).unwrap();
+    let app = build_app(config);
+    let server = TestServer::new(app);
+
+    let resp: TestResponse = server
+        .post("/transport/slack-bot/auth.test")
+        .add_header("Authorization", "Bearer xoxb-locksmith-fake")
+        .await;
+    resp.assert_status_ok();
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["ok"], true);
+
+    unsafe {
+        std::env::remove_var("LOCKSMITH_TRANSPORT_TEST_TOKEN");
+    }
+}
+
+#[tokio::test]
+async fn test_credential_transport_rejects_unknown_fake_handle() {
+    unsafe {
+        std::env::set_var("LOCKSMITH_TRANSPORT_REJECT_TEST_TOKEN", "real-slack-token");
+    }
+
+    let mock = MockServer::start().await;
+    let yaml = format!(
+        r#"
+listen:
+  host: "127.0.0.1"
+  port: 9200
+tools:
+  - name: "slack-bot"
+    description: "Slack bot Web API"
+    upstream: "{}"
+    credential_handles:
+      - "xoxb-locksmith-fake"
+    auth:
+      header: "Authorization"
+      force_replace: true
+      value:
+        from_env:
+          var: "LOCKSMITH_TRANSPORT_REJECT_TEST_TOKEN"
+          prefix: "Bearer "
+"#,
+        mock.uri()
+    );
+
+    let config = parse_config_str(&yaml).unwrap();
+    let app = build_app(config);
+    let server = TestServer::new(app);
+
+    let resp: TestResponse = server
+        .post("/transport/slack-bot/auth.test")
+        .add_header("Authorization", "Bearer xoxb-wrong")
+        .await;
+    resp.assert_status(axum::http::StatusCode::UNAUTHORIZED);
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["error"]["code"], "credential_handle_rejected");
+
+    let received = mock.received_requests().await.unwrap_or_default();
+    assert!(
+        received.is_empty(),
+        "rejected handle should not hit upstream"
+    );
+
+    unsafe {
+        std::env::remove_var("LOCKSMITH_TRANSPORT_REJECT_TEST_TOKEN");
+    }
+}
+
+#[tokio::test]
+async fn test_credential_transport_force_replace_missing_credential_fails_closed() {
+    unsafe {
+        std::env::remove_var("LOCKSMITH_TRANSPORT_MISSING_TEST_TOKEN");
+    }
+
+    let mock = MockServer::start().await;
+    let yaml = format!(
+        r#"
+listen:
+  host: "127.0.0.1"
+  port: 9200
+tools:
+  - name: "slack-bot"
+    description: "Slack bot Web API"
+    upstream: "{}"
+    credential_handles:
+      - "xoxb-locksmith-fake"
+    auth:
+      header: "Authorization"
+      force_replace: true
+      value:
+        from_env:
+          var: "LOCKSMITH_TRANSPORT_MISSING_TEST_TOKEN"
+          prefix: "Bearer "
+"#,
+        mock.uri()
+    );
+
+    let config = parse_config_str(&yaml).unwrap();
+    let app = build_app(config);
+    let server = TestServer::new(app);
+
+    let resp: TestResponse = server
+        .post("/transport/slack-bot/auth.test")
+        .add_header("Authorization", "Bearer xoxb-locksmith-fake")
+        .await;
+    resp.assert_status(axum::http::StatusCode::SERVICE_UNAVAILABLE);
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["error"]["code"], "credential_unavailable");
+
+    let received = mock.received_requests().await.unwrap_or_default();
+    assert!(
+        received.is_empty(),
+        "missing credential should not hit upstream"
+    );
+}
+
+#[tokio::test]
 async fn test_proxy_unknown_tool_404() {
     let yaml = r#"
 listen:

@@ -334,6 +334,66 @@ pub async fn proxy_handler(
     proxy_tool_request(state, tool_name, path, req).await
 }
 
+pub async fn credential_transport_handler_no_path(
+    State(state): State<Arc<AppState>>,
+    Path(tool_name): Path<String>,
+    req: Request<Body>,
+) -> Response {
+    credential_transport_request(state, tool_name, String::new(), req).await
+}
+
+pub async fn credential_transport_handler(
+    State(state): State<Arc<AppState>>,
+    Path((tool_name, path)): Path<(String, String)>,
+    req: Request<Body>,
+) -> Response {
+    credential_transport_request(state, tool_name, path, req).await
+}
+
+async fn credential_transport_request(
+    state: Arc<AppState>,
+    tool_name: String,
+    path: String,
+    req: Request<Body>,
+) -> Response {
+    if !credential_handle_matches(&state, &tool_name, req.headers()) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({
+                "error": {
+                    "code": "credential_handle_rejected",
+                    "message": "Credential transport handle rejected"
+                }
+            })),
+        )
+            .into_response();
+    }
+    proxy_tool_request(state, tool_name, path, req).await
+}
+
+fn credential_handle_matches(state: &AppState, tool_name: &str, headers: &HeaderMap) -> bool {
+    let config = state.config.load();
+    let Some(tool) = config.tools.iter().find(|tool| tool.name == tool_name) else {
+        return false;
+    };
+    if tool.credential_handles.is_empty() {
+        return false;
+    }
+    let Some(token) = headers
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().strip_prefix("Bearer "))
+        .map(str::trim)
+    else {
+        return false;
+    };
+    !token.is_empty()
+        && tool
+            .credential_handles
+            .iter()
+            .any(|handle| !handle.trim().is_empty() && token == handle.trim())
+}
+
 async fn proxy_tool_request(
     state: Arc<AppState>,
     tool_name: String,

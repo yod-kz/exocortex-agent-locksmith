@@ -344,6 +344,14 @@ pub fn build_app_full_with_phase_g(
             "/api/{tool_name}/{*path}",
             routing::any(proxy::proxy_handler),
         )
+        .route(
+            "/transport/{tool_name}",
+            routing::any(proxy::credential_transport_handler_no_path),
+        )
+        .route(
+            "/transport/{tool_name}/{*path}",
+            routing::any(proxy::credential_transport_handler),
+        )
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth::auth_middleware,
@@ -434,8 +442,7 @@ async fn skill_handler(
             // legacy ToolConfig entries via config.active_tools_against;
             // post-Phase-E that always returned empty for catalog
             // deployments because tools live in the registrations table.
-            let listing =
-                catalog_listing(&state, Some(id), crate::registrations::Kind::Tool).await;
+            let listing = catalog_listing(&state, Some(id), crate::registrations::Kind::Tool).await;
             let available: Vec<(String, String)> = listing
                 .into_iter()
                 .filter_map(|v| {
