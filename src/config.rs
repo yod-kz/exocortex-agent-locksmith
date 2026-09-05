@@ -14,6 +14,14 @@ pub struct AppConfig {
     pub inbound_auth: Option<InboundAuthConfig>,
     pub egress_proxy: Option<String>,
     pub kamiwaza: Option<KamiwazaConfig>,
+    /// Upstream TLS trust (optional). Lets operators trust a private/
+    /// internal CA for upstream verification — needed for HTTPS upstreams
+    /// behind an internal CA (e.g. Kamiwaza's "Kamiwaza Application
+    /// Intermediate CA"). reqwest is built with rustls + webpki bundled
+    /// roots, which ignore the system trust store, so a mounted CA only
+    /// takes effect when named here. Adds to the built-in roots; never
+    /// disables verification.
+    pub tls: Option<TlsConfig>,
     pub logging: Option<LoggingConfig>,
     #[serde(default)]
     pub shutdown: ShutdownConfig,
@@ -36,6 +44,19 @@ pub struct AppConfig {
 #[serde(deny_unknown_fields)]
 pub struct DatabaseConfig {
     pub path: PathBuf,
+}
+
+/// Upstream TLS trust configuration. Currently a single knob: an extra
+/// CA bundle (PEM, one or more certs) added to reqwest's root store for
+/// verifying HTTPS upstreams. Never disables verification — there is no
+/// accept-invalid-certs escape hatch by design (a credential proxy must
+/// not silently MITM-expose injected secrets).
+#[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct TlsConfig {
+    /// Path to a PEM bundle whose certificate(s) are added to the
+    /// built-in webpki roots for upstream verification.
+    pub upstream_ca_bundle: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -322,6 +343,12 @@ pub struct ToolConfig {
     /// header, then injects the configured tool credential on egress.
     #[serde(default)]
     pub credential_handles: Vec<String>,
+    /// Optional exact method/path restrictions for both `/api` and `/transport`.
+    /// Paths are absolute upstream URL paths, including any configured base path.
+    /// Restricted requests cannot contain query strings or encoded/ambiguous paths.
+    /// Absent preserves unrestricted routing; an empty list denies every request.
+    #[serde(default)]
+    pub request_allowlist: Option<Vec<ToolRequestRule>>,
     pub auth: Option<ToolAuthConfig>,
     #[serde(default)]
     pub timeouts: ToolTimeouts,
@@ -332,6 +359,25 @@ pub struct ToolConfig {
     /// behavior).
     #[serde(default)]
     pub response: Option<ResponseControlsConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolRequestRule {
+    pub method: String,
+    pub path: String,
+}
+
+/// Literal paths avoid disagreements between router decoding, URL parsing, and
+/// an upstream's own decoding. Restricted routes intentionally accept no escapes.
+pub(crate) fn is_literal_request_path(path: &str) -> bool {
+    path.starts_with('/')
+        && !path.contains("//")
+        && !path.contains(['%', '?', '#', '\\'])
+        && !path.chars().any(|c| c.is_whitespace() || c.is_control())
+        && !path
+            .split('/')
+            .any(|segment| segment == "." || segment == "..")
 }
 
 /// Per-tool response controls. All fields optional; absent fields
@@ -622,7 +668,29 @@ fn parse_with_registry(
     apply_deprecations(&mut value, registry);
     let config: AppConfig = serde_yaml::from_value(value)?;
     validate_response_controls(&config)?;
+    validate_request_allowlists(&config)?;
     Ok(config)
+}
+
+fn validate_request_allowlists(cfg: &AppConfig) -> Result<(), Box<dyn std::error::Error>> {
+    for tool in &cfg.tools {
+        let Some(rules) = &tool.request_allowlist else {
+            continue;
+        };
+        for rule in rules {
+            if rule.method != rule.method.to_ascii_uppercase()
+                || axum::http::Method::from_bytes(rule.method.as_bytes()).is_err()
+                || !is_literal_request_path(&rule.path)
+            {
+                return Err(format!(
+                    "tool `{}`: invalid request_allowlist method or path",
+                    tool.name
+                )
+                .into());
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Compile every `redaction_patterns[].regex` and reject duplicate

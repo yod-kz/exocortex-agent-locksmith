@@ -365,7 +365,10 @@ mod tests {
         assert!(v.get("max_output_tokens").is_none());
         assert_eq!(v["store"], Value::Bool(false));
         assert_eq!(v["stream"], Value::Bool(true));
-        assert_eq!(v["instructions"], Value::String(DEFAULT_INSTRUCTIONS.into()));
+        assert_eq!(
+            v["instructions"],
+            Value::String(DEFAULT_INSTRUCTIONS.into())
+        );
         assert_eq!(
             summary.fields_added,
             vec!["store", "stream", "instructions"]

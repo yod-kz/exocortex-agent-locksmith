@@ -5,11 +5,11 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use futures_util::StreamExt;
 use hmac::{Hmac, Mac};
 use reqwest::Client;
 use reqwest::header::{HeaderName as ReqwestHeaderName, HeaderValue as ReqwestHeaderValue};
 use secrecy::ExposeSecret;
-use futures_util::StreamExt;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::env;
@@ -343,12 +343,12 @@ fn extension_name_matches(pattern: &str, name: &str) -> bool {
         }
     }
     // A pattern without a trailing `*` must consume to the end.
-    if !pattern.ends_with('*') {
-        if let Some(last) = lowered.last() {
-            if !last.is_empty() && !name.ends_with(last.as_str()) {
-                return false;
-            }
-        }
+    if !pattern.ends_with('*')
+        && let Some(last) = lowered.last()
+        && !last.is_empty()
+        && !name.ends_with(last.as_str())
+    {
+        return false;
     }
     true
 }
@@ -596,10 +596,10 @@ pub async fn discover_tools(config: &AppConfig) -> Result<Vec<KamiwazaTool>, Kam
     let ttl = Duration::from_secs(kamiwaza.catalog_ttl_seconds.max(1));
     let cache = CATALOG_CACHE.get_or_init(|| AsyncMutex::new(None));
     let mut guard = cache.lock().await;
-    if let Some(entry) = guard.as_ref() {
-        if entry.expires_at > Instant::now() {
-            return Ok(entry.tools.clone());
-        }
+    if let Some(entry) = guard.as_ref()
+        && entry.expires_at > Instant::now()
+    {
+        return Ok(entry.tools.clone());
     }
     let tools = discover_tools_uncached(config).await?;
     *guard = Some(CachedCatalog {
@@ -638,52 +638,53 @@ async fn discover_tools_uncached(config: &AppConfig) -> Result<Vec<KamiwazaTool>
     let concurrency = kamiwaza.discovery_concurrency.max(1);
     let prefix = kamiwaza.tool_prefix.clone();
 
-    let mut discovered = futures_util::stream::iter(targets.into_iter().map(|(extension, mcp_url)| {
-        let client = &client;
-        let token = &token;
-        let prefix = &prefix;
-        async move {
-            let tools = match list_mcp_tools(client, &mcp_url, token).await {
-                Ok(tools) => tools,
-                Err(error) => {
-                    tracing::warn!(
-                        extension = %extension.name,
-                        error = %error,
-                        "failed to discover Kamiwaza MCP tools"
-                    );
-                    return Vec::new();
-                }
-            };
-            let mut out = Vec::new();
-            for tool in tools {
-                let Some(tool_name) = tool
-                    .get("name")
-                    .and_then(|value| value.as_str())
-                    .and_then(trim_nonempty)
-                else {
-                    continue;
+    let mut discovered =
+        futures_util::stream::iter(targets.into_iter().map(|(extension, mcp_url)| {
+            let client = &client;
+            let token = &token;
+            let prefix = &prefix;
+            async move {
+                let tools = match list_mcp_tools(client, &mcp_url, token).await {
+                    Ok(tools) => tools,
+                    Err(error) => {
+                        tracing::warn!(
+                            extension = %extension.name,
+                            error = %error,
+                            "failed to discover Kamiwaza MCP tools"
+                        );
+                        return Vec::new();
+                    }
                 };
-                out.push(KamiwazaTool {
-                    slug: tool_slug(prefix, &extension.name, &tool_name),
-                    extension_name: extension.name.clone(),
-                    mcp_url: mcp_url.clone(),
-                    tool_name,
-                    description: tool
-                        .get("description")
+                let mut out = Vec::new();
+                for tool in tools {
+                    let Some(tool_name) = tool
+                        .get("name")
                         .and_then(|value| value.as_str())
-                        .and_then(trim_nonempty),
-                    input_schema: tool.get("inputSchema").cloned(),
-                });
+                        .and_then(trim_nonempty)
+                    else {
+                        continue;
+                    };
+                    out.push(KamiwazaTool {
+                        slug: tool_slug(prefix, &extension.name, &tool_name),
+                        extension_name: extension.name.clone(),
+                        mcp_url: mcp_url.clone(),
+                        tool_name,
+                        description: tool
+                            .get("description")
+                            .and_then(|value| value.as_str())
+                            .and_then(trim_nonempty),
+                        input_schema: tool.get("inputSchema").cloned(),
+                    });
+                }
+                out
             }
-            out
-        }
-    }))
-    .buffer_unordered(concurrency)
-    .collect::<Vec<Vec<KamiwazaTool>>>()
-    .await
-    .into_iter()
-    .flatten()
-    .collect::<Vec<_>>();
+        }))
+        .buffer_unordered(concurrency)
+        .collect::<Vec<Vec<KamiwazaTool>>>()
+        .await
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
 
     discovered.sort_by(|left, right| left.slug.cmp(&right.slug));
     Ok(discovered)
@@ -735,8 +736,14 @@ pub async fn invoke_tool(
         let token = token.clone();
         let delegation = delegation.clone();
         tokio::spawn(async move {
-            close_mcp_session(&client, &mcp_url, &token, Some(&session_id), delegation.as_ref())
-                .await;
+            close_mcp_session(
+                &client,
+                &mcp_url,
+                &token,
+                Some(&session_id),
+                delegation.as_ref(),
+            )
+            .await;
         });
     }
     let payload = result?.1;
@@ -904,27 +911,51 @@ mod extension_name_match_tests {
 
     #[test]
     fn exact_name_matches_only_itself() {
-        assert!(extension_name_matches("tool-serperdev-kz1", "tool-serperdev-kz1"));
-        assert!(!extension_name_matches("tool-serperdev-kz1", "tool-serperdev-oc2"));
+        assert!(extension_name_matches(
+            "tool-serperdev-kz1",
+            "tool-serperdev-kz1"
+        ));
+        assert!(!extension_name_matches(
+            "tool-serperdev-kz1",
+            "tool-serperdev-oc2"
+        ));
     }
 
     #[test]
     fn trailing_suffix_wildcard_scopes_to_one_runtime() {
-        assert!(extension_name_matches("*-agentzero", "tool-serperdev-agentzero"));
-        assert!(extension_name_matches("*-agentzero", "tool-untrusted-content-agentzero"));
+        assert!(extension_name_matches(
+            "*-agentzero",
+            "tool-serperdev-agentzero"
+        ));
+        assert!(extension_name_matches(
+            "*-agentzero",
+            "tool-untrusted-content-agentzero"
+        ));
         assert!(!extension_name_matches("*-agentzero", "tool-serperdev-kz1"));
-        assert!(!extension_name_matches("*-agentzero", "tool-serperdev-agentzero-2"));
+        assert!(!extension_name_matches(
+            "*-agentzero",
+            "tool-serperdev-agentzero-2"
+        ));
     }
 
     #[test]
     fn leading_and_interior_wildcards() {
-        assert!(extension_name_matches("tool-serperdev-*", "tool-serperdev-kz1"));
+        assert!(extension_name_matches(
+            "tool-serperdev-*",
+            "tool-serperdev-kz1"
+        ));
         assert!(extension_name_matches("tool-*-kz1", "tool-serperdev-kz1"));
-        assert!(!extension_name_matches("tool-serperdev-*", "tool-telegram-kz1"));
+        assert!(!extension_name_matches(
+            "tool-serperdev-*",
+            "tool-telegram-kz1"
+        ));
     }
 
     #[test]
     fn case_insensitive() {
-        assert!(extension_name_matches("*-AgentZero", "tool-serperdev-agentzero"));
+        assert!(extension_name_matches(
+            "*-AgentZero",
+            "tool-serperdev-agentzero"
+        ));
     }
 }

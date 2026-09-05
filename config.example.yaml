@@ -19,6 +19,15 @@ logging:
   level: "info"
   # file: "/var/log/locksmith/proxy.log"
 
+# ── Upstream TLS trust (optional) ──────────────────────────
+# locksmith's HTTP client uses rustls + webpki bundled roots, which
+# IGNORE the system trust store. To verify an HTTPS upstream behind a
+# private/internal CA (e.g. Kamiwaza's internal CA), name a PEM bundle
+# here — its cert(s) are ADDED to the built-in roots. Verification is
+# never disabled (there is no accept-invalid-certs knob, by design).
+# tls:
+#   upstream_ca_bundle: "/etc/locksmith/ca/kamiwaza-ca.pem"
+
 # Graceful shutdown on SIGINT/SIGTERM. Streaming requests in flight at the
 # moment a signal is received get up to this many seconds to complete
 # before the listener is forcibly closed (INF-1).
@@ -47,6 +56,16 @@ shutdown:
 # ── Tool APIs ──────────────────────────────────────────────
 # Each tool entry describes one upstream that agents can call as
 # /api/<name>/<path>. R-F2.
+# Optional per-tool request_allowlist restricts BOTH /api and /transport.
+# Rules match the exact HTTP method and absolute upstream URL path (including
+# any path prefix in upstream). With a list present, queries, percent escapes,
+# dot segments, backslashes, and repeated slashes are rejected before forwarding.
+# Upstream redirects are returned without following them to another endpoint.
+# Omit for unrestricted routing; [] denies all requests. For example, expose a
+# guard pipeline without exposing its raw quarantine or administration endpoints:
+#   request_allowlist:
+#     - method: "POST"
+#       path: "/v1/pipelines/default/run"
 tools:
   - name: "github"
     description: "GitHub REST API"

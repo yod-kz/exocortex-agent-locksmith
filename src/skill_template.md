@@ -94,7 +94,7 @@ you specifically can call.
 ## Codex (OpenAI ChatGPT plan auth) — special case
 
 OpenAI's `/backend-api/codex/responses` endpoint has stricter
-requirements than the generic OpenAI-compat shape. **As of v2.4.0,
+requirements than the generic OpenAI-compat shape. **As of v2.5.2,
 locksmith handles all of them transparently** — agents call codex
 the same way they'd call any other OpenAI-compatible endpoint.
 

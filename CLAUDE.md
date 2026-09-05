@@ -4,11 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Working branch
 
-`develop` is the default working branch — currently at **v2.4.0**
+`develop` is the default working branch — currently at **v2.7.1**
 (catalog substrate + per-agent ACL + mTLS + OAuth credential variant
 + per-agent credential overrides + OAuth session labels + complete
-codex transparent integration through Phase G2/G3/G4). `main` only
-contains M0. Cut feature branches from `develop`.
+codex transparent integration through Phase G2/G3/G4/G5). `main` tracks
+releases (promoted from `develop` at release time; currently at v2.7.1).
+Cut feature branches from `develop`.
 
 Recent phase shipments on develop:
 
@@ -34,6 +35,28 @@ Recent phase shipments on develop:
   locksmith with only `Authorization` + minimal body — locksmith
   owns every codex-specific wire piece.
   See `docs/user/concepts/oauth-flow.md` for the end-to-end flow.
+- **Phase G5** (v2.5.2): codex `max_output_tokens` strip. The codex
+  Responses backend rejects `max_output_tokens`; `codex_body::fixup`
+  now removes it alongside the G3 store/stream/instructions fixups.
+- **v2.5.0 / v2.5.1**: Phase H operator guide (1Password setup) +
+  personalized `/skill` catalog-read fix (WEM-334).
+- **Phase I** (v2.6.0, pairs with layer8-proxy v1.6.0): codex
+  seed-upstream `/backend-api/codex` suffix fix (catalog 2.2.0, #90)
+  so seed-default deployments trigger the G2–G5 codex behaviors. Agent
+  endpoints reach hermes agents through locksmith as ordinary
+  `kind=model` registrations (no taxonomy change — agents-stack
+  ADR-0007); the ingress itself is config-only. Design:
+  `agents-stack/docs/spec/v0.4.0-agent-connectivity.md`.
+- **Upstream CA trust** (v2.7.0): optional `tls.upstream_ca_bundle`
+  config adds a private/internal CA to reqwest's roots so locksmith can
+  verify HTTPS upstreams behind an internal CA. Enables the Kamiwaza MCP
+  passthrough (layer8-proxy `examples/site/scripts/kamiwaza-mcp-registrar.py`).
+  Adds roots only; never disables verification.
+- **Query-string forwarding** (v2.7.1): `proxy_handler` re-attaches the
+  inbound query string (`req.uri().query()`) to the upstream URL — axum's
+  `{*path}` capture excludes it, so query-driven GETs (ComfyUI
+  `/view?filename=...`, paginated/filtered REST APIs) reached the upstream
+  stripped and 404'd. Regression test `test_proxy_forwards_query_string`.
 
 The authoritative stack-level docs live at `agents-stack/docs/`:
 

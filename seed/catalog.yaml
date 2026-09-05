@@ -25,7 +25,7 @@
 # DEFER and SKIP entries (~25 + ~10 categories) are listed there with
 # rationale; operators can register them via admin API today.
 
-version: "2.1.2"
+version: "2.2.0"
 
 entries:
   # ─── Models ─────────────────────────────────────────────────────────────
@@ -229,7 +229,7 @@ entries:
   - name: codex
     kind: model
     description: "OpenAI ChatGPT plan auth (codex CLI flow; device-code OAuth)"
-    upstream: "https://chatgpt.com/backend-api"
+    upstream: "https://chatgpt.com/backend-api/codex"
     auth:
       kind: oauth_device_code
       client_id: "app_EMoamEEZ73f0CkXaXp7hrann"

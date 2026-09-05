@@ -27,11 +27,10 @@ async fn ts230_bundled_seed_catalog_loads_at_version_2_1_0() {
     seed_loader::load_or_skip(&repo, &path).await.unwrap();
     let version = repo.get_seed_version().await.unwrap();
     assert!(
-        matches!(
-            version.as_deref(),
-            Some("2.1.2" | "2.1.1" | "2.1.0" | "2.0.0")
-        ),
-        "expected catalog version 2.0.0, 2.1.0, 2.1.1, or 2.1.2, got {version:?}"
+        version.as_deref() == Some("2.2.0")
+            || version.as_deref() == Some("2.1.0")
+            || version.as_deref() == Some("2.0.0"),
+        "expected catalog version 2.0.0/2.1.0/2.2.0, got {version:?}"
     );
 }
 
@@ -142,7 +141,7 @@ async fn ts232_seed_loader_adds_oauth_additively_on_version_bump() {
     }
 
     let v = repo.get_seed_version().await.unwrap();
-    assert_eq!(v.as_deref(), Some("2.1.2"));
+    assert_eq!(v.as_deref(), Some("2.2.0"));
 }
 
 fn unix_now() -> i64 {
@@ -150,4 +149,37 @@ fn unix_now() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+// ─── TS-233: seed codex upstream carries the /codex suffix ────────────────
+// Regression for the Phase I finding (agents-stack spec v0.4.0 §3.4): every
+// codex-specific proxy behavior (G2 account-ID injection, G3/G5 body fixups,
+// G4 header injection) keys on the substring `/backend-api/codex` in the
+// registration's upstream. The pre-2.2.0 seed shipped the bare
+// `/backend-api`, so a seed-default deployment forwarded /api/codex/responses
+// to the wrong path with none of the codex logic firing.
+#[tokio::test]
+async fn ts233_seed_codex_upstream_triggers_codex_fixups() {
+    let dir = TempDir::new().unwrap();
+    let pool = open_and_migrate(&dir.path().join("locksmith.db"))
+        .await
+        .unwrap();
+    let repo = RegistrationRepository::new(pool);
+    seed_loader::load_or_skip(&repo, &bundled_catalog_path())
+        .await
+        .unwrap();
+    let codex = repo
+        .get("codex")
+        .await
+        .unwrap()
+        .expect("codex seed entry present");
+    assert!(
+        codex
+            .upstream
+            .to_ascii_lowercase()
+            .contains("/backend-api/codex"),
+        "seed codex upstream must contain /backend-api/codex so \
+         is_chatgpt_codex_upstream() matches; got {}",
+        codex.upstream
+    );
 }

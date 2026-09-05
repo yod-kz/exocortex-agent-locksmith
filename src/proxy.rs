@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::app::AppState;
-use crate::config::{EgressMode, ToolConfig, ToolTimeouts};
+use crate::config::{EgressMode, ToolConfig, ToolTimeouts, is_literal_request_path};
 use crate::kamiwaza;
 use crate::registrations::{AuthSpec, Registration};
 use crate::repo::audit::{AuditEvent, AuditRepository, Decision, EventClass};
@@ -394,6 +394,24 @@ fn credential_handle_matches(state: &AppState, tool_name: &str, headers: &Header
             .any(|handle| !handle.trim().is_empty() && token == handle.trim())
 }
 
+fn tool_request_allowed(tool: &ToolConfig, upstream_url: &str, req: &Request<Body>) -> bool {
+    let Some(rules) = &tool.request_allowlist else {
+        return true;
+    };
+    if !is_literal_request_path(req.uri().path()) || req.uri().query().is_some() {
+        return false;
+    }
+    let Ok(url) = reqwest::Url::parse(upstream_url) else {
+        return false;
+    };
+    url.query().is_none()
+        && url.fragment().is_none()
+        && is_literal_request_path(url.path())
+        && rules
+            .iter()
+            .any(|rule| rule.method == req.method().as_str() && rule.path == url.path())
+}
+
 async fn proxy_tool_request(
     state: Arc<AppState>,
     tool_name: String,
@@ -428,6 +446,36 @@ async fn proxy_tool_request(
         }
     };
 
+    // Forward the inbound query string to the upstream. Axum's `{*path}`
+    // capture excludes the query, so without this any GET that relies on
+    // query params (e.g. ComfyUI `/view?filename=...`, paginated/filtered
+    // REST APIs) would reach the upstream stripped and typically 404.
+    let upstream_url = match req.uri().query() {
+        Some(query) if !query.is_empty() => {
+            format!(
+                "{}/{}?{}",
+                target.upstream.trim_end_matches('/'),
+                path,
+                query
+            )
+        }
+        _ => format!("{}/{}", target.upstream.trim_end_matches('/'), path),
+    };
+    // A configured restriction also applies when a catalog registration owns the
+    // target. Check the exact URL that reqwest will send, before credential/OAuth
+    // resolution or any upstream I/O, on both public proxy entry points.
+    let request_allowed = {
+        let config = state.config.load();
+        config
+            .tools
+            .iter()
+            .filter(|tool| tool.name == ctx.tool_name)
+            .all(|tool| tool_request_allowed(tool, &upstream_url, &req))
+    };
+    if !request_allowed {
+        return record_authz_denied(&state.audit, &ctx, "request_not_in_allowlist").await;
+    }
+
     // Phase G: per-agent credential override. When an override row
     // exists for (agent_id, registration), swap in the override's
     // AuthSpec BEFORE OAuth resolution / static-credential injection.
@@ -456,7 +504,6 @@ async fn proxy_tool_request(
 
     let config = state.config.load();
     let upstream_host = url_host(&target.upstream);
-    let upstream_url = format!("{}/{}", target.upstream.trim_end_matches('/'), path);
     let method = req.method().clone();
     let headers = req.headers().clone();
     if target.auth.force_replace_missing(&state, &target.name) {
@@ -928,7 +975,8 @@ fn build_streaming_truncate_callback(
 
 /// M9 / B1: emit a `security/authz_denied` audit row and return the
 /// generic 403 wire response with the §4.7.9 envelope. `reason` is
-/// `"in_denylist"` or `"not_in_allowlist"` per `AgentIdentity::allows_tool`.
+/// `"in_denylist"` / `"not_in_allowlist"` per `AgentIdentity::allows_tool`,
+/// or `"request_not_in_allowlist"` for a configured method/path restriction.
 async fn record_authz_denied(
     audit: &Option<AuditRepository>,
     ctx: &RequestCtx,
