@@ -38,6 +38,14 @@ pub async fn auth_middleware(
         return next.run(req).await;
     }
 
+    // Credential transport routes authenticate with per-tool fake bearer
+    // handles instead of the normal agent bearer. This avoids colliding with
+    // SDKs such as Slack that must use `Authorization: Bearer <token>` for
+    // their own upstream auth material.
+    if path == "/transport" || path.starts_with("/transport/") {
+        return next.run(req).await;
+    }
+
     // /skill is auth-OPTIONAL (M9 / B1 follow-up). With no
     // `Authorization` header the request passes through unauthenticated
     // and the handler renders the generic (no-leak) form. With a header

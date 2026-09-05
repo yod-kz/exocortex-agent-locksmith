@@ -101,6 +101,7 @@ fn model(name: &str) -> Registration {
         format!("https://example.com/{name}"),
         AuthSpec::Bearer {
             env_var: format!("{}_API_KEY", name.to_uppercase()),
+            force_replace: false,
         },
     )
 }
@@ -114,6 +115,7 @@ fn infra(name: &str) -> Registration {
         AuthSpec::Header {
             header: "X-Internal-Token".to_string(),
             env_var: format!("{}_INTERNAL_TOKEN", name.to_uppercase()),
+            force_replace: false,
         },
     )
 }

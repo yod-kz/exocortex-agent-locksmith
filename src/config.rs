@@ -316,6 +316,12 @@ pub struct ToolConfig {
     pub upstream: String,
     #[serde(default)]
     pub egress: EgressMode,
+    /// Optional fake bearer tokens accepted by `/transport/{tool}/...`.
+    /// These are credential handles, not upstream credentials. The proxy
+    /// accepts them only for this tool, strips the incoming Authorization
+    /// header, then injects the configured tool credential on egress.
+    #[serde(default)]
+    pub credential_handles: Vec<String>,
     pub auth: Option<ToolAuthConfig>,
     #[serde(default)]
     pub timeouts: ToolTimeouts,
@@ -405,6 +411,11 @@ fn default_body_limit() -> u64 {
 #[serde(deny_unknown_fields)]
 pub struct ToolAuthConfig {
     pub header: String,
+    /// When true, a missing resolved credential is fail-closed: the proxy
+    /// returns `credential_unavailable` instead of forwarding without
+    /// replacement. Incoming auth-shaped headers are stripped either way.
+    #[serde(default)]
+    pub force_replace: bool,
     /// Credential reference (M5). Accepts both the legacy plain-string
     /// form (`value: "Bearer ${TOKEN}"`) and the typed forms (`value:
     /// { from_env: { var: ... } }`, `from_file_sealed`, etc.). See

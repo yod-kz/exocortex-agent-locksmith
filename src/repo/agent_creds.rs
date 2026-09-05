@@ -202,6 +202,7 @@ mod tests {
         let id = make_agent(&agents, "hermes").await;
         let spec = AuthSpec::Bearer {
             env_var: "LM_STUDIO_API_KEY_HERMES".to_string(),
+            force_replace: false,
         };
         creds.set(id, "lmstudio", &spec).await.unwrap();
         let back = creds.get(id, "lmstudio").await.unwrap().unwrap();
@@ -227,6 +228,7 @@ mod tests {
                 "lmstudio",
                 &AuthSpec::Bearer {
                     env_var: "OLD".into(),
+                    force_replace: false,
                 },
             )
             .await
@@ -237,13 +239,14 @@ mod tests {
                 "lmstudio",
                 &AuthSpec::Bearer {
                     env_var: "NEW".into(),
+                    force_replace: false,
                 },
             )
             .await
             .unwrap();
         let back = creds.get(id, "lmstudio").await.unwrap().unwrap();
         match back.auth_spec {
-            AuthSpec::Bearer { env_var } => assert_eq!(env_var, "NEW"),
+            AuthSpec::Bearer { env_var, .. } => assert_eq!(env_var, "NEW"),
             _ => panic!("wrong variant"),
         }
     }
@@ -258,6 +261,7 @@ mod tests {
                 "lmstudio",
                 &AuthSpec::Bearer {
                     env_var: "X".into(),
+                    force_replace: false,
                 },
             )
             .await
@@ -279,6 +283,7 @@ mod tests {
                 "lmstudio",
                 &AuthSpec::Bearer {
                     env_var: "LM_HERMES".into(),
+                    force_replace: false,
                 },
             )
             .await
@@ -289,6 +294,7 @@ mod tests {
                 "tavily",
                 &AuthSpec::Bearer {
                     env_var: "TAVILY_HERMES".into(),
+                    force_replace: false,
                 },
             )
             .await
@@ -299,6 +305,7 @@ mod tests {
                 "lmstudio",
                 &AuthSpec::Bearer {
                     env_var: "LM_OPENCLAW".into(),
+                    force_replace: false,
                 },
             )
             .await
@@ -328,6 +335,7 @@ mod tests {
                 "lmstudio",
                 &AuthSpec::Bearer {
                     env_var: "X".into(),
+                    force_replace: false,
                 },
             )
             .await

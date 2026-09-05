@@ -68,6 +68,7 @@ async fn ts111_round_trip_full_registration() {
         AuthSpec::Header {
             header: "x-api-key".to_string(),
             env_var: "ANTHROPIC_API_KEY".to_string(),
+            force_replace: false,
         },
     );
     r.metadata = serde_json::json!({"modality": "text", "provider": "anthropic"});
@@ -96,6 +97,7 @@ async fn ts112_migration_idempotent() {
         "https://api.tavily.com".to_string(),
         AuthSpec::Bearer {
             env_var: "TAVILY_API_KEY".to_string(),
+            force_replace: false,
         },
     );
     repo1.create(&r).await.unwrap();
@@ -168,6 +170,7 @@ async fn ts114_cross_kind_name_reuse_blocked() {
         "https://example.com".to_string(),
         AuthSpec::Bearer {
             env_var: "FOO".to_string(),
+            force_replace: false,
         },
     );
     let result = repo.create(&model).await;
@@ -219,6 +222,7 @@ async fn ts116_set_disabled_toggles_flag() {
         "https://openrouter.ai/api".to_string(),
         AuthSpec::Bearer {
             env_var: "OPENROUTER_API_KEY".to_string(),
+            force_replace: false,
         },
     );
     repo.create(&r).await.unwrap();
@@ -252,6 +256,7 @@ async fn ts117_list_by_kind() {
         "https://api.openai.com".to_string(),
         AuthSpec::Bearer {
             env_var: "OPENAI_API_KEY".to_string(),
+            force_replace: false,
         },
     ))
     .await
@@ -263,6 +268,7 @@ async fn ts117_list_by_kind() {
         "https://api.github.com".to_string(),
         AuthSpec::Bearer {
             env_var: "GITHUB_TOKEN".to_string(),
+            force_replace: false,
         },
     ))
     .await
@@ -275,6 +281,7 @@ async fn ts117_list_by_kind() {
         AuthSpec::Header {
             header: "X-Internal-Token".to_string(),
             env_var: "LF_SCAN_INTERNAL_TOKEN".to_string(),
+            force_replace: false,
         },
     ))
     .await

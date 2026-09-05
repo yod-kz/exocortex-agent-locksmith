@@ -124,6 +124,7 @@ fn translate_auth(tool_name: &str, ta: &ToolAuthConfig) -> Option<AuthSpec> {
         SecretRef::FromEnv { var, .. } => Some(AuthSpec::Header {
             header: ta.header.clone(),
             env_var: var.clone(),
+            force_replace: ta.force_replace,
         }),
         SecretRef::LegacyString(s) => {
             // Pre-Phase-E "Bearer ${VAR}" or "${VAR}" form. Best-effort
@@ -132,6 +133,7 @@ fn translate_auth(tool_name: &str, ta: &ToolAuthConfig) -> Option<AuthSpec> {
             Some(AuthSpec::Header {
                 header: ta.header.clone(),
                 env_var: var,
+                force_replace: ta.force_replace,
             })
         }
         SecretRef::FromFileSealed { .. }
